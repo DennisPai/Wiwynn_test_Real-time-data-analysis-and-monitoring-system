@@ -13,6 +13,9 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 # 測試用 SQLite in-memory
 TEST_DB_URL = "sqlite+aiosqlite:///:memory:"
 
+# 測試環境標記（避免 APScheduler 啟動）
+os.environ["TESTING"] = "1"
+
 # 覆蓋 settings
 os.environ.setdefault("JWT_SECRET_KEY", "test_secret_key_at_least_32_chars_long_ok")
 os.environ["DB_HOST"] = "localhost"
@@ -20,6 +23,10 @@ os.environ["DB_PORT"] = "3306"
 os.environ["DB_NAME"] = "monitoring_test"
 os.environ["DB_USER"] = "test"
 os.environ["DB_PASSWORD"] = "test"
+
+# 在 import app 前先設定 structlog，避免 PrintLogger 無 .name 錯誤
+from app.logging_config import configure_logging  # noqa: E402
+configure_logging("WARNING")
 
 from app.db.base import Base  # noqa: E402
 from app.main import app  # noqa: E402

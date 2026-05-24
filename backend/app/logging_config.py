@@ -27,6 +27,7 @@ def configure_logging(log_level: str = "INFO") -> None:
         ],
         wrapper_class=structlog.make_filtering_bound_logger(level),
         context_class=dict,
-        logger_factory=structlog.PrintLoggerFactory(),
-        cache_logger_on_first_use=True,
+        # 使用 stdlib LoggerFactory 以支援 add_logger_name 處理器
+        logger_factory=structlog.stdlib.LoggerFactory(),
+        cache_logger_on_first_use=False,
     )

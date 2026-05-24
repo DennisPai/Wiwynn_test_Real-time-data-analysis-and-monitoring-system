@@ -8,11 +8,14 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
 
+# SQLite 不支援 BIGINT 自動遞增；使用 with_variant 在測試環境降級為 INTEGER
+_BigIntPK = BigInteger().with_variant(Integer, "sqlite")
+
 
 class AuditLog(Base):
     __tablename__ = "audit_logs"
 
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    id: Mapped[int] = mapped_column(_BigIntPK, primary_key=True, autoincrement=True)
     user_id: Mapped[int | None] = mapped_column(
         Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True
     )
