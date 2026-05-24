@@ -9,7 +9,7 @@ from pydantic import BaseModel
 class DataRecordResponse(BaseModel):
     id: int
     title: str
-    value: float
+    value: float  # R7: Decimal in / float out
     category: str
     recorded_at: datetime
     is_anomaly: bool
@@ -22,7 +22,7 @@ class DataRecordResponse(BaseModel):
 
 class DataCreate(BaseModel):
     title: str
-    value: Decimal
+    value: Decimal  # R7: Pydantic 自動 coerce
     category: str
     recorded_at: datetime
     is_anomaly: bool = False
@@ -36,7 +36,12 @@ class DataUpdate(BaseModel):
     is_anomaly: bool | None = None
 
 
+class BulkImportError(BaseModel):
+    row: int
+    reason: str
+
+
 class BulkImportResponse(BaseModel):
-    imported: int
+    inserted: int
     failed: int
-    errors: list[str]
+    errors: list[BulkImportError]

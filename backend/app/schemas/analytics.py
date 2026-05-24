@@ -23,7 +23,7 @@ class TimeBucket(BaseModel):
 
 class TimeRangeResponse(BaseModel):
     buckets: list[TimeBucket]
-    bucket: str
+    bucket: str  # "hour" or "day"
 
 
 class CategoryStat(BaseModel):
