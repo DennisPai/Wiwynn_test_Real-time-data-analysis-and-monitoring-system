@@ -11,6 +11,7 @@ from app.core.security import create_access_token, hash_password, verify_passwor
 from app.models.user import Role, User
 from app.schemas.auth import LoginRequest, RegisterRequest, TokenResponse
 from app.schemas.user import UserResponse
+from app.services.audit_log_service import write_audit_log
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -35,6 +36,17 @@ async def register(
     db.add(user)
     await db.flush()
     await db.refresh(user)
+
+    # 寫入 audit_log
+    await write_audit_log(
+        db,
+        action="register",
+        user_id=user.id,
+        target_type="user",
+        target_id=str(user.id),
+        meta={"email": user.email},
+    )
+
     return UserResponse.model_validate(user)
 
 
@@ -57,6 +69,16 @@ async def login(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="帳號已停用",
         )
+
+    # 寫入 audit_log
+    await write_audit_log(
+        db,
+        action="login",
+        user_id=user.id,
+        target_type="user",
+        target_id=str(user.id),
+        meta={"email": user.email},
+    )
 
     token = create_access_token(
         sub=str(user.id), email=user.email, role=user.role.value

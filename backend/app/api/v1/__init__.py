@@ -15,4 +15,7 @@ api_router.include_router(users_router)
 api_router.include_router(data_router)
 api_router.include_router(analytics_router)
 api_router.include_router(admin_router)
-api_router.include_router(ws_router)
+
+# WS router 掛在根路徑（/ws/realtime），不走 /api/v1 prefix
+# 由 main.py 直接 include（此處匯出供 main.py 使用）
+__all__ = ["api_router", "ws_router"]

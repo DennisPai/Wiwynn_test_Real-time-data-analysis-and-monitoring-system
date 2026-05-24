@@ -18,13 +18,21 @@ class AuditLogResponse(BaseModel):
     model_config = {"from_attributes": True}
 
 
-class DBStatusResponse(BaseModel):
-    status: str
-    pool_size: int
-    checked_in: int
+class PoolInfo(BaseModel):
+    size: int
     checked_out: int
     overflow: int
-    invalid: int
+
+
+class TableInfo(BaseModel):
+    name: str
+    row_count: int
+
+
+class DBStatusResponse(BaseModel):
+    ok: bool
+    pool: PoolInfo
+    tables: list[TableInfo]
 
 
 class RealtimeMetricResponse(BaseModel):
