@@ -71,11 +71,15 @@ def upgrade() -> None:
         },
     ]
 
+    # MariaDB/MySQL 用 INSERT IGNORE；SQLite 用 INSERT OR IGNORE（測試環境）
+    dialect_users = conn.dialect.name
+    insert_ignore_users = "INSERT IGNORE" if dialect_users in ("mysql", "mariadb") else "INSERT OR IGNORE"
+
     for u in seed_users:
-        # INSERT IGNORE（email UNIQUE 衝突時跳過，避免重跑 migration 時重複）
+        # 重跑 migration 時 email UNIQUE 衝突直接跳過，不報錯
         conn.execute(
             sa.text(
-                "INSERT IGNORE INTO users (email, password_hash, role, display_name, is_active) "
+                f"{insert_ignore_users} INTO users (email, password_hash, role, display_name, is_active) "
                 "VALUES (:email, :password_hash, :role, :display_name, :is_active)"
             ),
             u,
@@ -112,10 +116,15 @@ def upgrade() -> None:
         },
     ]
 
+    # MariaDB/MySQL `key` 是保留字，必須用 backtick 包；SQLite 用雙引號
+    dialect = conn.dialect.name
+    quoted_key = "`key`" if dialect in ("mysql", "mariadb") else '"key"'
+    insert_ignore = "INSERT IGNORE" if dialect in ("mysql", "mariadb") else "INSERT OR IGNORE"
+
     for s in seed_settings:
         conn.execute(
             sa.text(
-                "INSERT IGNORE INTO app_settings (key, value, description) "
+                f"{insert_ignore} INTO app_settings ({quoted_key}, value, description) "
                 "VALUES (:key, :value, :description)"
             ),
             s,
@@ -124,9 +133,11 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     conn = op.get_bind()
+    dialect = conn.dialect.name
+    quoted_key = "`key`" if dialect in ("mysql", "mariadb") else '"key"'
     conn.execute(
         sa.text(
-            "DELETE FROM app_settings WHERE key IN "
+            f"DELETE FROM app_settings WHERE {quoted_key} IN "
             "('anomaly_threshold_high','anomaly_threshold_low',"
             "'realtime_tick_seconds','batch_flush_seconds')"
         )
