@@ -13,6 +13,9 @@ class Settings(BaseSettings):
     )
 
     # Database
+    # DATABASE_URL（若設定）優先於下方 DB_* 拼裝；Zeabur / Heroku 等平台慣例
+    # 範例：mysql+asyncmy://user:pass@host:3306/dbname
+    DATABASE_URL: str = ""
     DB_HOST: str = "localhost"
     DB_PORT: int = 3306
     DB_NAME: str = "monitoring"
@@ -54,6 +57,16 @@ class Settings(BaseSettings):
 
     @property
     def database_url(self) -> str:
+        # 1) 完整 DATABASE_URL 優先（Zeabur / Heroku / Railway 等平台慣例）
+        if self.DATABASE_URL:
+            url = self.DATABASE_URL
+            # 自動補 async driver：mysql:// → mysql+asyncmy://
+            if url.startswith("mysql://"):
+                url = "mysql+asyncmy://" + url[len("mysql://") :]
+            elif url.startswith("mariadb://"):
+                url = "mysql+asyncmy://" + url[len("mariadb://") :]
+            return url
+        # 2) Fallback：從 DB_HOST/PORT/USER/PASSWORD/NAME 拼裝
         return (
             f"mysql+asyncmy://{self.DB_USER}:{self.DB_PASSWORD}"
             f"@{self.DB_HOST}:{self.DB_PORT}/{self.DB_NAME}"

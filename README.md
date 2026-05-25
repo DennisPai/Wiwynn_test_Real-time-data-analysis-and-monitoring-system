@@ -195,6 +195,44 @@ alembic downgrade -1                                   # 退回上一版
 - CORS 預設只允許 `http://localhost:8501`，部署到其他網域需更新 `CORS_ORIGINS`
 - 時間欄位一律 UTC 存 + ISO8601 帶 timezone，前端顯示時 `tz_convert("Asia/Taipei")`
 
+## 雲端部署（前後端分開）
+
+### 後端（Zeabur / Render / Railway / Fly.io 等容器平台）
+
+服務根目錄選 `/backend`，build 使用 `backend/Dockerfile`。**必填** env 變數：
+
+| Env | 範例值 | 說明 |
+|---|---|---|
+| `DATABASE_URL` | `mysql+asyncmy://user:pass@mariadb.internal:3306/monitoring` | 完整連線字串。`mysql://` 與 `mariadb://` 開頭會自動補 `+asyncmy` driver。**有設此變數時 DB_HOST/DB_PORT 等會被忽略** |
+| `JWT_SECRET_KEY` | （`openssl rand -hex 32` 產生）| 至少 32 字元，否則啟動 raise |
+| `CORS_ORIGINS` | `https://your-frontend-domain.zeabur.app` | 改成你前端部署網域，逗號分隔可多個 |
+| `APP_ENV` | `production` | |
+| `LOG_LEVEL` | `INFO` | |
+
+選填（有預設值）：`JWT_EXPIRE_MINUTES` / `REALTIME_TICK_SECONDS` / `BATCH_FLUSH_SECONDS` / `ANOMALY_THRESHOLD_HIGH` / `ANOMALY_THRESHOLD_LOW` / `SEED_*`。
+
+#### Zeabur 特別注意
+
+1. **必先 deploy MariaDB 服務**（Zeabur Templates 找 MariaDB 或 MySQL 8）
+2. backend 服務的 env 設 `DATABASE_URL`，引用 MariaDB 服務的內部 DNS：
+   ```
+   DATABASE_URL=mysql+asyncmy://${MARIADB_USERNAME}:${MARIADB_PASSWORD}@${MARIADB_HOST}:${MARIADB_PORT}/${MARIADB_DATABASE}
+   ```
+   （Zeabur 會把連結的 MariaDB 服務變數注入 env，名稱依模板可能是 `MYSQL_*` 或 `MARIADB_*`，依實際提示調整）
+3. backend 容器啟動會自動跑 `alembic upgrade head` 建表 + seed 三個測試帳號
+4. backend 對外 port 8000，需要在 Zeabur 開放 HTTP 路由
+
+### 前端（Zeabur 第二個服務）
+
+服務根目錄選 `/frontend`，build 使用 `frontend/Dockerfile`。env 變數：
+
+| Env | 範例值 | 說明 |
+|---|---|---|
+| `BACKEND_URL` | `https://your-backend.zeabur.app` | 後端公開 URL（HTTPS）|
+| `BACKEND_WS_URL` | `wss://your-backend.zeabur.app` | WebSocket URL（注意是 `wss://` 不是 `ws://`）|
+
+前端對外 port 8501（Streamlit 預設）。
+
 ## 授權
 
 MIT
