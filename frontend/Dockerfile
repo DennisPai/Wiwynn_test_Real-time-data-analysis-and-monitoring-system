@@ -24,13 +24,15 @@ RUN pip install --no-cache-dir /wheels/* && rm -rf /wheels
 COPY streamlit_app/ ./streamlit_app/
 
 # Streamlit 設定：關閉遙測、不自動開瀏覽器
+# PORT 預設 8501（本機 / docker-compose），Zeabur/Heroku/Railway 等雲端平台會以 $PORT 覆蓋
 ENV STREAMLIT_BROWSER_GATHER_USAGE_STATS=false \
     STREAMLIT_SERVER_HEADLESS=true \
-    STREAMLIT_SERVER_PORT=8501
+    PORT=8501
 
-# BACKEND_URL 由 docker-compose 注入
+# BACKEND_URL 由 docker-compose / 雲端平台 env 注入
 ENV BACKEND_URL=http://backend:8000
 
 EXPOSE 8501
 
-CMD ["streamlit", "run", "streamlit_app/Home.py", "--server.port=8501", "--server.headless=true"]
+# 雲端 $PORT 注入需透過 sh -c 展開
+CMD ["sh", "-c", "streamlit run streamlit_app/Home.py --server.port=${PORT} --server.address=0.0.0.0 --server.headless=true"]

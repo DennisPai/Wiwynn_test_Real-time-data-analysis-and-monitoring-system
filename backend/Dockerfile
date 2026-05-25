@@ -29,8 +29,10 @@ COPY alembic/ alembic/
 COPY app/ app/
 
 ENV PYTHONUNBUFFERED=1 \
-    PYTHONDONTWRITEBYTECODE=1
+    PYTHONDONTWRITEBYTECODE=1 \
+    PORT=8000
 
 EXPOSE 8000
 
-CMD ["sh", "-c", "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 1"]
+# 雲端平台（Zeabur / Heroku / Railway 等）會以 $PORT env 注入實際 port，需以 sh -c 展開
+CMD ["sh", "-c", "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port ${PORT} --workers 1"]
