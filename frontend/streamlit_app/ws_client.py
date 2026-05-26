@@ -3,6 +3,22 @@ WebSocket 客戶端（Realtime 頁面使用）。
 - 使用 st.cache_resource 避免 Streamlit re-run 重建連線
 - 指數退避重連（1→2→4→8→max 30 秒）
 - close code 1008 → token 失效 → 拋出 TokenInvalidError
+
+BACKEND_WS_URL 優先順序：
+1. 環境變數 BACKEND_WS_URL（所有部署環境皆推薦顯式設定）
+2. 環境變數 WS_URL（舊版兼容）
+3. fallback：ws://localhost:8000（本地 docker compose 預設 BE port）
+
+本地開發者：`cp .env.example .env` + `docker compose up -d --build` 即可，
+  docker-compose.yml 已設 BACKEND_WS_URL=ws://backend:8000（容器間通訊）。
+
+雲端部署（Zeabur / Heroku / Railway 等）：**必須**設 BACKEND_WS_URL env var 為後端公開 WSS URL，
+  例如 BACKEND_WS_URL=wss://your-backend.zeabur.app
+  注意雲端需用 wss://（TLS），本地用 ws://。
+  若未設定，連線將嘗試 localhost:8000，雲端環境必然失敗。
+
+注意：BE 的 WS endpoint 是 /ws/realtime（不走 /api/v1 prefix），
+  若只給 base URL 不含路徑，本函式會自動補上 /ws/realtime。
 """
 from __future__ import annotations
 
@@ -22,12 +38,12 @@ def _resolve_ws_url() -> str:
     解析 WebSocket endpoint URL：
     - 優先讀 BACKEND_WS_URL（對齊 .env.example、Zeabur env var）
     - 否則讀 WS_URL（舊兼容）
-    - 都沒有則使用 production fallback
+    - 都沒有則使用本地 localhost fallback（本地 docker compose 預設）
     - BACKEND_WS_URL 若只給 base（不含 /ws/realtime 路徑），自動補上 /ws/realtime
     """
     raw = os.environ.get("BACKEND_WS_URL") or os.environ.get("WS_URL")
     if not raw:
-        return "wss://wiwynn-test-real-time-data-analysis-and-monitoring-backend.zeabur.app/ws/realtime"
+        return "ws://localhost:8000/ws/realtime"
     raw = raw.rstrip("/")
     if raw.endswith("/ws/realtime"):
         return raw
@@ -35,8 +51,6 @@ def _resolve_ws_url() -> str:
 
 
 _WS_URL = _resolve_ws_url()
-# 本地開發者請設 BACKEND_WS_URL=ws://localhost:8000 override（path 自動補）
-# 注意：BE 的 WS endpoint 是 /ws/realtime（不走 /api/v1 prefix）
 
 _BACKOFF_INITIAL = 1      # 秒
 _BACKOFF_MAX = 30         # 秒

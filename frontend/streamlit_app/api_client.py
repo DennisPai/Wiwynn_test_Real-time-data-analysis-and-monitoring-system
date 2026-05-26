@@ -1,5 +1,17 @@
 """
 API Client：封裝對後端 HTTP 請求。
+
+BACKEND_URL 優先順序：
+1. 環境變數 BACKEND_URL（所有部署環境皆推薦顯式設定）
+2. fallback：http://localhost:8000（本地 docker compose 預設 BE port）
+
+本地開發者：`cp .env.example .env` + `docker compose up -d --build` 即可，
+  docker-compose.yml 已將容器間通訊設為 BACKEND_URL=http://backend:8000，
+  .env.example 預設 BACKEND_URL=http://backend:8000，因此本 fallback 僅作安全網。
+
+雲端部署（Zeabur / Heroku / Railway 等）：**必須**設 BACKEND_URL env var 為後端公開 HTTPS URL，
+  例如 BACKEND_URL=https://your-backend.zeabur.app
+  若未設定，連線將嘗試 localhost:8000，雲端環境必然失敗。
 """
 from __future__ import annotations
 
@@ -11,9 +23,8 @@ import streamlit as st
 
 _BACKEND_URL = os.environ.get(
     "BACKEND_URL",
-    "https://wiwynn-test-real-time-data-analysis-and-monitoring-backend.zeabur.app",
+    "http://localhost:8000",
 ).rstrip("/")  # 防禦：移除末尾斜線避免拼接成 //api/v1 雙斜線
-# 本地開發者請設 BACKEND_URL=http://localhost:8000 override
 _API_PREFIX = "/api/v1"
 
 

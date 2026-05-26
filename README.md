@@ -26,7 +26,9 @@
 
 詳見 [docs/architecture.md](docs/architecture.md)（mermaid 拓樸圖、序列圖、ER 圖、Docker 結構）。
 
-## 快速開始（Docker Compose）
+## 快速開始（本地 Docker Compose）
+
+> **預設部署方式**：本地 docker compose。三個指令啟動全部服務，無需設定雲端帳號。
 
 ### 1. 必備
 
@@ -39,6 +41,7 @@
 ```bash
 cp .env.example .env
 # 編輯 .env：至少改 JWT_SECRET_KEY（openssl rand -hex 32）與 DB 密碼
+# 其餘欄位使用 .env.example 預設值即可在本地運作
 ```
 
 ### 3. 啟動
@@ -62,6 +65,9 @@ docker compose ps
 | 後端 Swagger UI | http://localhost:8000/docs |
 | 後端 ReDoc | http://localhost:8000/redoc |
 | 健康檢查 | http://localhost:8000/health |
+
+> docker-compose.yml 已設定容器間通訊（backend service name = `backend`），
+> 前端容器自動以 `http://backend:8000` 連接後端，本地開發者不需手動設 BACKEND_URL。
 
 ## 測試帳號
 
@@ -222,7 +228,10 @@ alembic downgrade -1                                   # 退回上一版
 - CORS 預設只允許 `http://localhost:8501`，部署到其他網域需更新 `CORS_ORIGINS`
 - 時間欄位一律 UTC 存 + ISO8601 帶 timezone，前端顯示時 `tz_convert("Asia/Taipei")`
 
-## 雲端部署（前後端分開）
+## 雲端部署（進階選用）
+
+> 本節為選用章節。主要使用情境：本地 docker compose 已驗證正常後，要將系統部署到雲端服務。
+> 以 Zeabur 為範例，其他平台（Render / Railway / Fly.io）概念相同。
 
 ### 後端（Zeabur / Render / Railway / Fly.io 等容器平台）
 
@@ -251,12 +260,18 @@ alembic downgrade -1                                   # 退回上一版
 
 ### 前端（Zeabur 第二個服務）
 
-服務根目錄選 `/frontend`，build 使用 `frontend/Dockerfile`。env 變數：
+服務根目錄選 `/frontend`，build 使用 `frontend/Dockerfile`。
+
+**前端雲端部署必填 env 變數（缺少將導致連線失敗）：**
 
 | Env | 範例值 | 說明 |
 |---|---|---|
 | `BACKEND_URL` | `https://your-backend.zeabur.app` | 後端公開 URL（HTTPS）|
 | `BACKEND_WS_URL` | `wss://your-backend.zeabur.app` | WebSocket URL（注意是 `wss://` 不是 `ws://`）|
+
+> **重要**：前端程式碼若未設 `BACKEND_URL` 和 `BACKEND_WS_URL`，
+> fallback 為 `http://localhost:8000` 和 `ws://localhost:8000`。
+> 雲端環境中 localhost 指向容器本身（非後端服務），因此**這兩個 env var 在雲端環境為必填**。
 
 前端對外 port 8501（Streamlit 預設）。
 
