@@ -9,13 +9,13 @@ from auth import current_role, current_user, login
 
 st.set_page_config(
     page_title="即時資料分析與監控系統",
-    page_icon="📊",
+    page_icon=None,
     layout="centered",
 )
 
 # 若已登入，直接轉到 Dashboard
 if st.session_state.get("token"):
-    st.switch_page("pages/1_📊_Dashboard.py")
+    st.switch_page("pages/1_儀表板.py")
 
 st.title("即時資料分析與監控系統")
 st.markdown("---")
@@ -38,7 +38,7 @@ with tab_login:
                 success, message = login(email, password)
             if success:
                 st.success("登入成功，正在跳轉...")
-                st.switch_page("pages/1_📊_Dashboard.py")
+                st.switch_page("pages/1_儀表板.py")
             else:
                 st.error(f"登入失敗：{message}")
 

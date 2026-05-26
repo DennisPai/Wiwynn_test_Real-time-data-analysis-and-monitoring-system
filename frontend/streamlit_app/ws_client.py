@@ -118,6 +118,11 @@ class RealtimeWSClient:
                         except json.JSONDecodeError:
                             logger.warning("收到非 JSON 訊息：%s", raw)
                             continue
+                        # D1-1: wide payload schema v2 驗證
+                        if data.get("schema_version") != "v2":
+                            logger.warning("ws: 收到非 v2 payload，忽略 %s", data)
+                            continue
+                        # D1-2: buffer 元素為 wide snapshot dict
                         self._buffer.append(data)
                         on_tick(data)
 
