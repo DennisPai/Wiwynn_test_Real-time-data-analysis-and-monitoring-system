@@ -74,7 +74,7 @@ def format_ts(iso_str: str | None) -> str:
     if not iso_str:
         return ""
     try:
-        dt = pd.to_datetime(iso_str, utc=True).tz_convert("Asia/Taipei")
+        dt = pd.to_datetime(iso_str, utc=True, format="ISO8601").tz_convert("Asia/Taipei")
         return dt.strftime("%Y-%m-%d %H:%M:%S")
     except Exception:
         return str(iso_str)
@@ -207,7 +207,7 @@ if all_ticks:
     df_rt = pd.DataFrame(all_ticks)
     # 轉換時間戳
     if "ts" in df_rt.columns:
-        df_rt["ts_tw"] = pd.to_datetime(df_rt["ts"], utc=True).dt.tz_convert("Asia/Taipei")
+        df_rt["ts_tw"] = pd.to_datetime(df_rt["ts"], utc=True, format="ISO8601").dt.tz_convert("Asia/Taipei")
     else:
         df_rt["ts_tw"] = pd.Series(dtype="object")
 

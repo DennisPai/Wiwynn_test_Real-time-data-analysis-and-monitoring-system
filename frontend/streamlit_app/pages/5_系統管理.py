@@ -46,7 +46,7 @@ def format_ts(iso_str: str | None) -> str:
     if not iso_str:
         return ""
     try:
-        dt = pd.to_datetime(iso_str, utc=True).tz_convert("Asia/Taipei")
+        dt = pd.to_datetime(iso_str, utc=True, format="ISO8601").tz_convert("Asia/Taipei")
         return dt.strftime("%Y-%m-%d %H:%M:%S")
     except Exception:
         return str(iso_str)
@@ -478,7 +478,7 @@ with tab_rt_hist:
 
         # D6-7: 折線圖 5 條線
         if "ts" in df_rth.columns:
-            df_rth["ts_tw"] = pd.to_datetime(df_rth["ts"], utc=True).dt.tz_convert("Asia/Taipei")
+            df_rth["ts_tw"] = pd.to_datetime(df_rth["ts"], utc=True, format="ISO8601").dt.tz_convert("Asia/Taipei")
 
             fig_rth = go.Figure()
             for metric_key in _ADMIN_METRIC_KEYS:

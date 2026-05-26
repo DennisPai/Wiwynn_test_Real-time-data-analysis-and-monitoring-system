@@ -67,7 +67,7 @@ try:
     last_update_str = ""
     if last_snap:
         try:
-            ts = pd.to_datetime(last_snap.get("ts", ""), utc=True).tz_convert("Asia/Taipei")
+            ts = pd.to_datetime(last_snap.get("ts", ""), utc=True, format="ISO8601").tz_convert("Asia/Taipei")
             last_update_str = ts.strftime("%Y-%m-%d %H:%M:%S")
         except Exception:
             last_update_str = str(last_snap.get("ts", ""))
@@ -183,7 +183,7 @@ with tab_realtime:
         df_rt_show = df_rt[available_rt].rename(columns=display_cols_rt).copy()
         if "時間（台北）" in df_rt_show.columns:
             df_rt_show["時間（台北）"] = pd.to_datetime(
-                df_rt_show["時間（台北）"], utc=True
+                df_rt_show["時間（台北）"], utc=True, format="ISO8601"
             ).dt.tz_convert("Asia/Taipei").dt.strftime("%Y-%m-%d %H:%M:%S")
         st.dataframe(df_rt_show, use_container_width=True, hide_index=True)
     else:
