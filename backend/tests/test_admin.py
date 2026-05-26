@@ -448,6 +448,120 @@ async def test_audit_log_from_login(
     assert body["total"] >= 1
 
 
+# ──────────────────────────────────────────
+# T5.9: PATCH /admin/settings（anomaly threshold）
+# ──────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_admin_patch_anomaly_threshold_admin(
+    client: AsyncClient, admin_token: str
+) -> None:
+    """T5.9: admin 可 PATCH anomaly threshold，response 含 updated_keys + anomaly_threshold。"""
+    resp = await client.patch(
+        "/api/v1/admin/settings",
+        json={
+            "anomaly_threshold": {
+                "temperature": {"high": 85.0, "low": 5.0},
+                "humidity": {"high": 90.0, "low": 15.0},
+            }
+        },
+        headers=make_auth_header(admin_token),
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert "updated_keys" in body
+    assert "anomaly_threshold" in body
+    assert "anomaly_threshold.temperature" in body["updated_keys"]
+    assert "anomaly_threshold.humidity" in body["updated_keys"]
+    assert body["anomaly_threshold"]["temperature"]["high"] == 85.0
+    assert body["anomaly_threshold"]["temperature"]["low"] == 5.0
+
+
+@pytest.mark.asyncio
+async def test_admin_patch_anomaly_threshold_upsert(
+    client: AsyncClient, admin_token: str
+) -> None:
+    """T5.9: PATCH 兩次同 metric 應 UPSERT（不重複建立）。"""
+    payload = {
+        "anomaly_threshold": {"pressure": {"high": 1060.0, "low": 940.0}}
+    }
+    resp1 = await client.patch(
+        "/api/v1/admin/settings",
+        json=payload,
+        headers=make_auth_header(admin_token),
+    )
+    assert resp1.status_code == 200
+
+    resp2 = await client.patch(
+        "/api/v1/admin/settings",
+        json={"anomaly_threshold": {"pressure": {"high": 1070.0, "low": 930.0}}},
+        headers=make_auth_header(admin_token),
+    )
+    assert resp2.status_code == 200
+    body2 = resp2.json()
+    assert body2["anomaly_threshold"]["pressure"]["high"] == 1070.0
+
+
+@pytest.mark.asyncio
+async def test_admin_patch_anomaly_threshold_user_forbidden(
+    client: AsyncClient, user_token: str
+) -> None:
+    """T5.9: user 不能 PATCH anomaly threshold，應回 403。"""
+    resp = await client.patch(
+        "/api/v1/admin/settings",
+        json={"anomaly_threshold": {"temperature": {"high": 80.0, "low": 10.0}}},
+        headers=make_auth_header(user_token),
+    )
+    assert resp.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_admin_patch_anomaly_threshold_viewer_forbidden(
+    client: AsyncClient, viewer_token: str
+) -> None:
+    """T5.9: viewer 不能 PATCH anomaly threshold，應回 403。"""
+    resp = await client.patch(
+        "/api/v1/admin/settings",
+        json={"anomaly_threshold": {"temperature": {"high": 80.0, "low": 10.0}}},
+        headers=make_auth_header(viewer_token),
+    )
+    assert resp.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_admin_patch_anomaly_threshold_invalid_metric(
+    client: AsyncClient, admin_token: str
+) -> None:
+    """T5.9: 不合法的 metric 名稱應回 422。"""
+    resp = await client.patch(
+        "/api/v1/admin/settings",
+        json={"anomaly_threshold": {"disk_usage": {"high": 90.0, "low": 10.0}}},
+        headers=make_auth_header(admin_token),
+    )
+    assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_admin_patch_anomaly_threshold_creates_audit_log(
+    client: AsyncClient, admin_token: str, admin_user: User
+) -> None:
+    """T5.9: PATCH anomaly threshold 應在 audit_logs 留下記錄。"""
+    resp = await client.patch(
+        "/api/v1/admin/settings",
+        json={"anomaly_threshold": {"voltage": {"high": 14.0, "low": 10.5}}},
+        headers=make_auth_header(admin_token),
+    )
+    assert resp.status_code == 200
+
+    logs_resp = await client.get(
+        f"/api/v1/admin/logs?action=patch_anomaly_threshold&user_id={admin_user.id}",
+        headers=make_auth_header(admin_token),
+    )
+    assert logs_resp.status_code == 200
+    logs_body = logs_resp.json()
+    assert logs_body["total"] >= 1
+
+
 @pytest.mark.asyncio
 async def test_audit_log_paginated(
     client: AsyncClient, admin_token: str, seed_audit_log: AuditLog
@@ -463,3 +577,62 @@ async def test_audit_log_paginated(
     assert body["size"] == 5
     assert "pages" in body
     assert len(body["items"]) <= 5
+
+
+# ──────────────────────────────────────────
+# Fix 4: PATCH /admin/settings high <= low validation
+# ──────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_patch_settings_high_le_low_422(
+    client: AsyncClient, admin_token: str
+) -> None:
+    """Fix 4: PATCH anomaly threshold where high <= low → 422 validation error。"""
+    # high < low: high=10, low=80 → 應 422
+    resp = await client.patch(
+        "/api/v1/admin/settings",
+        json={
+            "anomaly_threshold": {
+                "temperature": {"high": 10.0, "low": 80.0},
+            }
+        },
+        headers=make_auth_header(admin_token),
+    )
+    assert resp.status_code == 422, f"Expected 422 for high <= low, got {resp.status_code}: {resp.text}"
+
+
+@pytest.mark.asyncio
+async def test_patch_settings_high_equal_low_422(
+    client: AsyncClient, admin_token: str
+) -> None:
+    """Fix 4: PATCH anomaly threshold where high == low → 422 validation error。"""
+    resp = await client.patch(
+        "/api/v1/admin/settings",
+        json={
+            "anomaly_threshold": {
+                "humidity": {"high": 50.0, "low": 50.0},
+            }
+        },
+        headers=make_auth_header(admin_token),
+    )
+    assert resp.status_code == 422, f"Expected 422 for high == low, got {resp.status_code}: {resp.text}"
+
+
+@pytest.mark.asyncio
+async def test_patch_settings_high_gt_low_valid(
+    client: AsyncClient, admin_token: str
+) -> None:
+    """Fix 4: PATCH anomaly threshold where high > low → 200 OK。"""
+    resp = await client.patch(
+        "/api/v1/admin/settings",
+        json={
+            "anomaly_threshold": {
+                "cpu_usage": {"high": 90.0, "low": 5.0},
+            }
+        },
+        headers=make_auth_header(admin_token),
+    )
+    assert resp.status_code == 200, f"Expected 200 for valid threshold, got {resp.status_code}: {resp.text}"
+    body = resp.json()
+    assert body["anomaly_threshold"]["cpu_usage"]["high"] == 90.0
+    assert body["anomaly_threshold"]["cpu_usage"]["low"] == 5.0

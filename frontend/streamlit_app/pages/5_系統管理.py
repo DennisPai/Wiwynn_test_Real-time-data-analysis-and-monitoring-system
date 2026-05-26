@@ -2,11 +2,11 @@
 系統管理頁面（僅 admin 角色可存取）。
 
 5 個 tab（去 emoji）：
-  1. 使用者列表  — GET /users、角色權限矩陣、改密碼
-  2. 系統日誌    — GET /admin/logs
-  3. 資料庫狀態  — GET /admin/db-status
-  4. 即時資料歷史 — GET /admin/realtime-history（wide format）+ 5 條折線
-  5. 系統設定    — GET/PATCH /admin/settings
+  1. 使用者列表   — GET /users、角色權限矩陣、改密碼
+  2. 系統日誌     — GET /admin/logs
+  3. 資料庫狀態   — GET /admin/db-status
+  4. 即時資料歷史 — GET /admin/realtime-history（wide format）+ 5 條折線（保留）
+  5. 系統設定     — GET/PATCH /admin/settings + 異常閾值設定（PATCH /admin/settings）
 
 非 admin → st.error + st.stop()。
 """
@@ -606,6 +606,105 @@ with tab_rt_hist:
 with tab_settings:
     st.subheader("系統設定")
     st.caption("修改設定後點擊「儲存」即時生效。設定值存放於資料庫 app_settings 表。")
+
+    # ── T7.5: 異常閾值設定區塊（PATCH /api/v1/admin/settings）────────────────
+    st.subheader("異常閾值設定")
+    st.caption(
+        "設定各指標的異常判定閾值。當指標數值超出 [低閾值, 高閾值] 範圍時，系統將標記為異常。"
+        "儲存後 30 秒內全系統生效（anomaly_detector cache TTL）。"
+    )
+
+    _THRESHOLD_METRICS = [
+        ("temperature", "溫度 °C"),
+        ("humidity", "濕度 %"),
+        ("pressure", "壓力 kPa"),
+        ("voltage", "電壓 V"),
+        ("cpu_usage", "CPU %"),
+    ]
+    # 預設值（對應 settings.py DEFAULT_ANOMALY_THRESHOLDS）
+    _DEFAULT_THRESHOLDS = {
+        "temperature": {"high": 80.0, "low": 10.0},
+        "humidity": {"high": 85.0, "low": 20.0},
+        "pressure": {"high": 1050.0, "low": 950.0},
+        "voltage": {"high": 13.5, "low": 11.0},
+        "cpu_usage": {"high": 90.0, "low": 5.0},
+    }
+
+    # 從 DB 取現有 threshold（parse app_settings key: anomaly_threshold.<metric>）
+    @st.cache_data(ttl=30)
+    def _fetch_thresholds() -> dict[str, dict]:
+        """從 /admin/settings 取出 anomaly_threshold.* key，回傳 {metric: {high, low}}。"""
+        import json as _json
+        resp = client.get("/admin/settings")
+        result: dict[str, dict] = {}
+        if resp.status_code == 200:
+            for setting in resp.json():
+                key_str = setting.get("key", "")
+                if key_str.startswith("anomaly_threshold."):
+                    metric_name = key_str.replace("anomaly_threshold.", "")
+                    try:
+                        val = _json.loads(setting.get("value", "{}"))
+                        result[metric_name] = val
+                    except Exception:
+                        pass
+        return result
+
+    with st.spinner("載入閾值設定..."):
+        try:
+            existing_thresholds = _fetch_thresholds()
+        except Exception:
+            existing_thresholds = {}
+
+    threshold_inputs: dict[str, dict] = {}
+    for mk, zh_label in _THRESHOLD_METRICS:
+        defaults = existing_thresholds.get(mk) or _DEFAULT_THRESHOLDS.get(mk, {"high": 100.0, "low": 0.0})
+        with st.expander(f"{zh_label}（{mk}）閾值", expanded=False):
+            t_col1, t_col2 = st.columns(2)
+            with t_col1:
+                high_val = st.number_input(
+                    "高閾值（超過此值標記異常）",
+                    value=float(defaults.get("high", 100.0)),
+                    format="%.4f",
+                    key=f"threshold_high_{mk}",
+                )
+            with t_col2:
+                low_val = st.number_input(
+                    "低閾值（低於此值標記異常）",
+                    value=float(defaults.get("low", 0.0)),
+                    format="%.4f",
+                    key=f"threshold_low_{mk}",
+                )
+            if high_val <= low_val:
+                st.warning(f"警告：高閾值（{high_val}）應大於低閾值（{low_val}），請確認設定。")
+            threshold_inputs[mk] = {"high": high_val, "low": low_val}
+
+    if st.button("儲存異常閾值設定", key="save_thresholds_btn", type="primary"):
+        # 驗證：任何 high <= low 直接拒絕
+        invalid_metrics = [
+            zh_label
+            for mk, zh_label in _THRESHOLD_METRICS
+            if threshold_inputs[mk]["high"] <= threshold_inputs[mk]["low"]
+        ]
+        if invalid_metrics:
+            st.error(f"以下指標高閾值必須大於低閾值：{', '.join(invalid_metrics)}")
+        else:
+            with st.spinner("儲存中..."):
+                resp_thresh = client.patch_admin_settings(threshold_inputs)
+            if resp_thresh.status_code == 200:
+                st.toast("已儲存，30 秒內生效")
+                st.cache_data.clear()
+                st.rerun()
+            else:
+                try:
+                    detail = resp_thresh.json().get("detail", "儲存失敗")
+                except Exception:
+                    detail = f"儲存失敗（HTTP {resp_thresh.status_code}）"
+                st.error(f"閾值儲存失敗：{detail}")
+
+    st.markdown("---")
+
+    # ── 原有設定項目列表 ─────────────────────────────────────────────────────
+    st.subheader("其他設定項目")
 
     # Settings expander toggle（v3 Story #11 AC-2）
     if "settings_all_expanded" not in st.session_state:

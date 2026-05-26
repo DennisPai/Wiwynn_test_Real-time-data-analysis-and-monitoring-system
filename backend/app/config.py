@@ -40,6 +40,15 @@ class Settings(BaseSettings):
     ANOMALY_THRESHOLD_HIGH: float = 80.0
     ANOMALY_THRESHOLD_LOW: float = 10.0
 
+    # Per-metric anomaly threshold fallback values (used when DB AppSetting is absent)
+    DEFAULT_ANOMALY_THRESHOLDS: dict = {
+        "temperature": {"high": 80, "low": 10},
+        "humidity": {"high": 85, "low": 20},
+        "pressure": {"high": 1050, "low": 950},
+        "voltage": {"high": 13.5, "low": 11.0},
+        "cpu_usage": {"high": 90, "low": 5},
+    }
+
     # Seed accounts
     SEED_ADMIN_EMAIL: str = "admin@example.com"
     SEED_ADMIN_PASSWORD: str = "admin123"

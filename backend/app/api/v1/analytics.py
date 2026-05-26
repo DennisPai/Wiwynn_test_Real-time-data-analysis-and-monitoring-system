@@ -27,7 +27,7 @@ _VALID_BUCKETS = {"hour", "day"}
 def _to_naive_utc(dt: datetime) -> datetime:
     """
     把任意 datetime 轉成 naive UTC（去掉 tzinfo）。
-    防止 tz-aware FE input vs naive DB column 的比對全 false（Q7 root cause B 防衛）。
+    防止 tz-aware FE input vs naive DB column 的比對全 false。
     """
     if dt.tzinfo is not None:
         return dt.astimezone(timezone.utc).replace(tzinfo=None)
@@ -40,14 +40,14 @@ async def analytics_summary(
     current_user: Annotated[User, AnyRole],
     date_from: datetime | None = Query(None),
     date_to: datetime | None = Query(None),
-    category: str | None = Query(None),
+    sources: list[str] | None = Query(None, description="來源過濾（user / simulator）"),
 ) -> SummaryResponse:
     """
-    聚合統計（任何已登入角色可讀）。
-    回傳：total_records / anomaly_count / avg_value / min_value / max_value / categories。
+    聚合統計（任何已登入角色可讀）。T5.6 wide schema。
+    回傳：total / anomaly_count / anomaly_rate / per_metric breakdown。
     """
     return await analytics_service.get_summary(
-        db, date_from=date_from, date_to=date_to, category=category
+        db, date_from=date_from, date_to=date_to, sources=sources
     )
 
 
@@ -58,12 +58,11 @@ async def analytics_timerange(
     date_from: datetime = Query(...),
     date_to: datetime = Query(...),
     bucket: str = Query("hour", description="時間桶大小：hour 或 day"),
-    category: str | None = Query(None),
+    sources: list[str] | None = Query(None, description="來源過濾（user / simulator）"),
 ) -> TimeRangeResponse:
     """
-    按時間桶聚合（任何已登入角色可讀）。
+    按時間桶聚合（任何已登入角色可讀）。T5.6 wide schema。
     bucket 接受 hour 或 day，其他值回 422。
-    C3-2: 轉 naive UTC 防止 tz-aware vs naive DB column 比對全 false（Q7 root cause B 防衛）。
     """
     if bucket not in _VALID_BUCKETS:
         raise HTTPException(
@@ -75,7 +74,7 @@ async def analytics_timerange(
         date_from=_to_naive_utc(date_from),
         date_to=_to_naive_utc(date_to),
         bucket=bucket,
-        category=category,
+        sources=sources,
     )
 
 
@@ -85,12 +84,15 @@ async def analytics_categories(
     current_user: Annotated[User, AnyRole],
     date_from: datetime = Query(...),
     date_to: datetime = Query(...),
+    sources: list[str] | None = Query(None, description="來源過濾（user / simulator）"),
 ) -> CategoriesResponse:
     """
-    依 category 分組聚合（任何已登入角色可讀）。
-    回傳各 category 的 count / avg_value / anomaly_count。
+    per-metric breakdown（任何已登入角色可讀）。T5.6: endpoint 名稱保留，改回傳 per-metric breakdown。
+    5 metric 各自統計 count / avg / min / max / anomaly_count。
     """
-    return await analytics_service.get_categories(db, date_from=date_from, date_to=date_to)
+    return await analytics_service.get_categories(
+        db, date_from=date_from, date_to=date_to, sources=sources
+    )
 
 
 @router.get("/export")
@@ -99,19 +101,17 @@ async def analytics_export(
     current_user: Annotated[User, AnyRole],
     date_from: datetime | None = Query(None),
     date_to: datetime | None = Query(None),
-    category: str | None = Query(None),
+    sources: list[str] | None = Query(None),
 ) -> StreamingResponse:
     """
-    匯出 Excel 分析報告（任何已登入角色可下載）。
-    包含 Summary / TimeRange（day 桶）/ Categories 三個 sheet。
+    匯出 Excel 分析報告（任何已登入角色可下載）。T5.11 wide schema。
+    包含 Summary / TimeRange（day 桶）/ Sources 三個 sheet。
     Content-Disposition: attachment; filename="data_YYYY-MM-DD.xlsx"
     """
-    # 取得各分析資料
     summary = await analytics_service.get_summary(
-        db, date_from=date_from, date_to=date_to, category=category
+        db, date_from=date_from, date_to=date_to, sources=sources
     )
 
-    # export 用 day 桶
     effective_from = date_from or datetime(2000, 1, 1)
     effective_to = date_to or datetime(2100, 12, 31)
 
@@ -120,11 +120,11 @@ async def analytics_export(
         date_from=effective_from,
         date_to=effective_to,
         bucket="day",
-        category=category,
+        sources=sources,
     )
 
     categories_resp = await analytics_service.get_categories(
-        db, date_from=effective_from, date_to=effective_to
+        db, date_from=effective_from, date_to=effective_to, sources=sources
     )
 
     return build_excel_response(
@@ -141,17 +141,21 @@ async def analytics_unified_summary(
     current_user: Annotated[User, AnyRole],
     date_from: datetime | None = Query(None),
     date_to: datetime | None = Query(None),
-    source: str = Query("both", description="both | realtime | records"),
+    sources: list[str] | None = Query(
+        default=None,
+        description="user|simulator multiselect，留空 = both（等同 both 行為）",
+    ),
 ) -> UnifiedSummaryResponse:
     """
-    統一 realtime + records 兩 source 的摘要（Q8）。任何已登入角色可讀。
-    source 可選 both / realtime / records。
+    統一 realtime + records 兩 source 的摘要。T5.6 per-source breakdown。
+    sources 可傳 user / simulator（multiselect list），留空 = 全列。
+    設計.md §5 規格：response shape {user: {count, anomaly_count}, simulator_data_records: {count, anomaly_count}, realtime: {count, anomaly_count}}。
     """
     return await analytics_service.get_unified_summary(
         db,
         date_from=date_from,
         date_to=date_to,
-        source=source,
+        sources=sources,
     )
 
 
@@ -163,7 +167,7 @@ async def analytics_realtime_categories(
     date_to: datetime | None = Query(None),
 ) -> RealtimeCategoriesResponse:
     """
-    即時資料各 metric 分佈統計（Q11）。任何已登入角色可讀。
+    即時資料各 metric 分佈統計。T5.6: 查 realtime_metric_wide（保留不動）。
     回傳 5 個 metric 的 count / avg / anomaly_count。
     """
     return await analytics_service.get_realtime_categories(

@@ -1,15 +1,18 @@
 from __future__ import annotations
 
 from datetime import datetime
+from decimal import Decimal
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
 from fastapi.responses import Response
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import AnyRole, get_current_user, get_db, require_role
 from app.models.user import Role, User
 from app.schemas.data_record import (
+    BulkImportError,
     BulkImportResponse,
     DataCreate,
     DataRecordResponse,
@@ -21,8 +24,53 @@ from app.utils.csv_importer import parse_csv, parse_json
 
 router = APIRouter(prefix="/data", tags=["data"])
 
-# 排序欄位白名單（防止 SQL injection）
-_VALID_SORT_FIELDS = {"recorded_at", "created_at", "updated_at", "title", "value", "category"}
+
+async def _resolve_owner_id(
+    db: AsyncSession,
+    row: DataCreate,
+    current_user: User,
+) -> int | HTTPException:
+    """
+    Resolve owner_id for a bulk-import row.
+    - If owner_email is absent → use current_user.id
+    - If owner_email is present and current_user is not admin → HTTPException 403
+    - If owner_email is present, admin, and email doesn't exist → HTTPException 422
+    - If owner_email is present and admin → lookup and return target user id
+
+    Returns int (owner_id) on success, HTTPException on error.
+    """
+    owner_email = getattr(row, "owner_email", None)
+    if not owner_email:
+        return current_user.id
+
+    # owner_email provided
+    if current_user.role != Role.admin:
+        return HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="只有 admin 可在 CSV 內指定 owner_email 跨 owner 匯入",
+        )
+
+    # admin lookup
+    result = await db.execute(select(User).where(User.email == owner_email))
+    target = result.scalar_one_or_none()
+    if target is None:
+        return HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"owner_email={owner_email!r} 不存在於 users 表",
+        )
+    return target.id
+
+# T5.1: wide schema 排序欄位白名單（防止 SQL injection）
+_VALID_SORT_FIELDS = {
+    "ts",
+    "created_at",
+    "updated_at",
+    "temperature",
+    "humidity",
+    "pressure",
+    "voltage",
+    "cpu_usage",
+}
 _VALID_SORT_ORDERS = {"asc", "desc"}
 
 # bulk-import 大檔上限（10 MB）
@@ -35,16 +83,20 @@ async def list_data(
     current_user: Annotated[User, AnyRole],
     page: int = Query(1, ge=1, description="頁碼（起始 1）"),
     size: int = Query(20, ge=1, le=100, description="每頁筆數（最大 100）"),
-    category: str | None = Query(None),
+    # T5.1: 新增 wide schema query params
+    sources: list[str] | None = Query(None, description="來源過濾（user / simulator）"),
+    metric: str | None = Query(None, description="單一 metric range filter 欄位名稱"),
+    min_value: Decimal | None = Query(None, description="metric 最小值"),
+    max_value: Decimal | None = Query(None, description="metric 最大值"),
+    # 保留通用 query params
     owner_id: int | None = Query(None),
     date_from: datetime | None = Query(None),
     date_to: datetime | None = Query(None),
-    search: str | None = Query(None, description="title 模糊搜尋"),
-    sort_by: str = Query("recorded_at", description="排序欄位"),
+    sort_by: str = Query("ts", description="排序欄位"),
     sort_order: str = Query("desc", description="asc 或 desc"),
 ) -> PaginatedResponse[DataRecordResponse]:
-    """列出資料記錄（任何已登入角色可讀）。"""
-    # 排序欄位白名單驗證
+    """列出資料記錄（任何已登入角色可讀）。wide schema。"""
+    # T5.1: 排序欄位白名單驗證（wide schema）
     if sort_by not in _VALID_SORT_FIELDS:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -60,11 +112,13 @@ async def list_data(
         db,
         page=page,
         size=size,
-        category=category,
+        sources=sources,
+        metric=metric,
+        min_value=min_value,
+        max_value=max_value,
         owner_id=owner_id,
         date_from=date_from,
         date_to=date_to,
-        search=search,
         sort_by=sort_by,
         sort_order=sort_order,
     )
@@ -82,10 +136,11 @@ async def bulk_import(
     file: UploadFile = File(...),
 ) -> BulkImportResponse:
     """
-    批量導入 CSV 或 JSON 檔案（admin/user 可用）。
+    批量導入 CSV 或 JSON 檔案（admin/user 可用）。wide format。
     - 檔案大小限制 10 MB，超過回 413
-    - 逐行驗證，部分失敗仍插入有效列
-    - 回傳 {inserted, failed, errors:[{row, reason}]}
+    - header 偵測：舊 long 格式 / 缺所有 metric → 整檔拒絕
+    - per-row 逐行驗證，部分失敗仍插入有效列
+    - 回傳 {inserted, failed, errors:[{row, reason, missing_columns}]}
     """
     # 讀取並驗證檔案大小
     content = await file.read()
@@ -103,10 +158,21 @@ async def bulk_import(
         # 預設當 CSV 處理
         valid_rows, errors = parse_csv(content)
 
-    # 批量寫入有效列
+    # 批量寫入有效列（T5.2: 使用 wide DataCreate + 自動計算 anomaly_flags）
+    # Fix 2: owner_email → owner_id lookup（admin 模式允許跨 owner）
     inserted = 0
-    for row in valid_rows:
-        await data_service.create_record(db, row, owner_id=current_user.id)
+    for row_index, row in enumerate(valid_rows):
+        owner_id_or_exc = await _resolve_owner_id(db, row, current_user)
+        if isinstance(owner_id_or_exc, HTTPException):
+            # 以 BulkImportError 格式回傳，繼續處理其他 row
+            errors.append(
+                BulkImportError(
+                    row=row_index + 1,
+                    reason=owner_id_or_exc.detail,
+                )
+            )
+            continue
+        await data_service.create_record(db, row, owner_id=owner_id_or_exc)
         inserted += 1
 
     return BulkImportResponse(
@@ -122,7 +188,7 @@ async def create_data(
     db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[User, require_role(Role.admin, Role.user)],
 ) -> DataRecordResponse:
-    """新增資料記錄（admin/user 可用）。"""
+    """新增資料記錄（admin/user 可用）。T5.2: wide DataCreate + 自動 anomaly_flags。"""
     record = await data_service.create_record(db, body, owner_id=current_user.id)
     return DataRecordResponse.model_validate(record)
 
@@ -133,7 +199,7 @@ async def get_data(
     db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[User, AnyRole],
 ) -> DataRecordResponse:
-    """取得單筆資料記錄（任何已登入角色可讀）。"""
+    """取得單筆資料記錄（任何已登入角色可讀）。T5.3: wide response。"""
     record = await data_service.get_record(db, record_id)
     if record is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="記錄不存在")
@@ -148,7 +214,7 @@ async def update_data(
     current_user: Annotated[User, Depends(get_current_user)],
 ) -> DataRecordResponse:
     """
-    更新資料記錄。
+    更新資料記錄。T5.3: wide DataUpdate + wide response。
     - admin：可更新任何人的記錄
     - user：只能更新自己的記錄
     - viewer：403
@@ -171,7 +237,7 @@ async def delete_data(
     current_user: Annotated[User, Depends(get_current_user)],
 ) -> Response:
     """
-    刪除資料記錄。
+    刪除資料記錄。T5.3: 邏輯不變。
     - admin：可刪除任何人的記錄
     - user：只能刪除自己的記錄
     - viewer：403

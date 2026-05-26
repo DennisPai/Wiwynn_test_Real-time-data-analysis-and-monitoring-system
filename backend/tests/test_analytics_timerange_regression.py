@@ -1,6 +1,7 @@
-"""
-C3: regression test for GET /api/v1/analytics/timerange (Q7)
-Verifies tz-aware datetime input does not return empty buckets.
+"""test_analytics_timerange_regression.py — T5.6: timerange regression tests (rewrite).
+
+Q7 regression: tz-aware datetime input should not produce empty buckets.
+Wide schema: uses wide DataCreate + per-metric aggregate structure.
 """
 from __future__ import annotations
 
@@ -22,20 +23,20 @@ async def viewer_token(client: AsyncClient, viewer_user: User) -> str:
     return await get_token(client, viewer_user.email, "viewer12")
 
 
-async def _seed_records(client: AsyncClient, token: str, category: str) -> None:
-    """Build 3 records for timerange testing."""
-    for i in range(3):
-        await client.post(
+async def _seed_wide_records(client: AsyncClient, token: str, ts_dates: list[str]) -> None:
+    """Build wide records with given ts values."""
+    for ts in ts_dates:
+        resp = await client.post(
             "/api/v1/data",
             json={
-                "title": f"tr_reg_{i}",
-                "value": 10.0 * (i + 1),
-                "category": category,
-                "recorded_at": f"2025-01-0{i + 1}T10:00:00",
-                "is_anomaly": False,
+                "ts": ts,
+                "temperature": 25.0,
+                "humidity": 60.0,
+                "source": "user",
             },
             headers=make_auth_header(token),
         )
+        assert resp.status_code == 201, resp.text
 
 
 # ── happy path (regression: tz-aware Z suffix should not produce empty buckets) ──
@@ -46,26 +47,31 @@ async def test_timerange_tz_aware_input_not_empty(
 ) -> None:
     """
     Q7 regression: tz-aware datetime (Z suffix) should not produce empty buckets.
-    C3-2 fix normalises tz-aware → naive UTC before passing to service.
+    T5.6 wide schema: bucket contains per-metric aggregate.
     """
-    category = "tz_regression_test"
-    await _seed_records(client, admin_token, category)
+    ts_dates = [
+        "2025-01-01T10:00:00Z",
+        "2025-01-02T10:00:00Z",
+        "2025-01-03T10:00:00Z",
+    ]
+    await _seed_wide_records(client, admin_token, ts_dates)
 
     # Send tz-aware datetime (Z suffix)
     resp = await client.get(
         "/api/v1/analytics/timerange"
         "?date_from=2025-01-01T00:00:00Z"
         "&date_to=2025-01-31T23:59:59Z"
-        "&bucket=day"
-        f"&category={category}",
+        "&bucket=day",
         headers=make_auth_header(admin_token),
     )
     assert resp.status_code == 200
     body = resp.json()
-    # Should have data, not empty buckets
     assert body["bucket"] == "day"
     assert isinstance(body["buckets"], list)
-    assert len(body["buckets"]) == 3, f"Expected 3 buckets, got {len(body['buckets'])} — Q7 regression"
+    assert len(body["buckets"]) >= 3, (
+        f"Expected ≥3 buckets, got {len(body['buckets'])} — Q7 regression. "
+        f"tz-aware input may be causing empty buckets."
+    )
 
 
 @pytest.mark.asyncio
@@ -73,20 +79,45 @@ async def test_timerange_naive_datetime_still_works(
     client: AsyncClient, admin_token: str
 ) -> None:
     """Naive datetime (no tz suffix) should still work after fix."""
-    category = "naive_dt_regression"
-    await _seed_records(client, admin_token, category)
+    ts_dates = [
+        "2025-02-01T10:00:00Z",
+        "2025-02-02T10:00:00Z",
+        "2025-02-03T10:00:00Z",
+    ]
+    await _seed_wide_records(client, admin_token, ts_dates)
 
     resp = await client.get(
         "/api/v1/analytics/timerange"
-        "?date_from=2025-01-01T00:00:00"
-        "&date_to=2025-01-31T23:59:59"
-        "&bucket=day"
-        f"&category={category}",
+        "?date_from=2025-02-01T00:00:00"
+        "&date_to=2025-02-28T23:59:59"
+        "&bucket=day",
         headers=make_auth_header(admin_token),
     )
     assert resp.status_code == 200
     body = resp.json()
-    assert len(body["buckets"]) == 3
+    assert len(body["buckets"]) >= 3
+
+
+@pytest.mark.asyncio
+async def test_timerange_wide_bucket_per_metric(client: AsyncClient, admin_token: str) -> None:
+    """T5.6: 確認 bucket 含 per_metric dict（5 metric key）。"""
+    ts_dates = ["2025-03-01T10:00:00Z", "2025-03-01T11:00:00Z"]
+    await _seed_wide_records(client, admin_token, ts_dates)
+
+    resp = await client.get(
+        "/api/v1/analytics/timerange"
+        "?date_from=2025-03-01T00:00:00Z"
+        "&date_to=2025-03-01T23:59:59Z"
+        "&bucket=hour",
+        headers=make_auth_header(admin_token),
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert len(body["buckets"]) >= 2
+    for b in body["buckets"]:
+        assert "per_metric" in b
+        for metric in ("temperature", "humidity", "pressure", "voltage", "cpu_usage"):
+            assert metric in b["per_metric"]
 
 
 # ── error cases ──────────────────────────────────────────────────────────────

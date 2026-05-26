@@ -1,5 +1,5 @@
 """
-分析報表頁面：統一摘要 + 時間趨勢圖（Q7 fix）+ 類別分佈 + source toggle + Excel 匯出。
+分析報表頁面：wide schema 統計摘要 + 時間趨勢 + 5-metric breakdown + anomaly distribution。
 """
 from __future__ import annotations
 
@@ -27,6 +27,22 @@ client = APIClient()
 user = current_user()
 role = current_role()
 
+_METRICS = ["temperature", "humidity", "pressure", "voltage", "cpu_usage"]
+_METRIC_ZH = {
+    "temperature": "溫度 °C",
+    "humidity": "濕度 %",
+    "pressure": "壓力 kPa",
+    "voltage": "電壓 V",
+    "cpu_usage": "CPU %",
+}
+_METRIC_COLORS = {
+    "temperature": "royalblue",
+    "humidity": "green",
+    "pressure": "orange",
+    "voltage": "purple",
+    "cpu_usage": "teal",
+}
+
 
 def format_ts(iso_str: str | None) -> str:
     """將後端 UTC ISO8601 字串轉換為台北時間並格式化。"""
@@ -52,7 +68,10 @@ with col_user:
         logout()
         st.switch_page("Home.py")
 
-st.caption("您可以在這裡查看資料分析報表：即時 + 錄入資料的統計摘要、時間趨勢圖、類別分布長條圖。可切換資料來源（兩者 / 僅即時 / 僅錄入）、調整時間粒度（小時 / 日），並可匯出 Excel 檔。")
+st.caption(
+    "查看資料分析報表：KPI 摘要、5-metric breakdown、異常分布圖、時間趨勢。"
+    "可透過查詢條件篩選來源與日期範圍，並匯出 Excel。"
+)
 
 st.markdown("---")
 
@@ -68,9 +87,14 @@ with st.expander("查詢條件", expanded=True):
         f_date_to = st.date_input("結束日期", value=default_to, key="analytics_date_to")
 
     with filter_col2:
-        _KNOWN_CATEGORIES = ["（全部）", "temperature", "humidity", "pressure", "voltage", "cpu_usage"]
-        f_category_label = st.selectbox("類別篩選（錄入資料）", _KNOWN_CATEGORIES, index=0)
-        f_category: str | None = None if f_category_label == "（全部）" else f_category_label
+        # T7.3: 單一 f_sources multiselect 取代 v2 的 3 個 toggle
+        f_sources = st.multiselect(
+            "資料來源（留空 = 全部）",
+            options=["user", "simulator"],
+            default=[],
+            key="f_sources",
+            format_func=lambda x: {"user": "錄入資料", "simulator": "即時資料"}.get(x, x),
+        )
 
     with filter_col3:
         _BUCKET_MAP = {"小時（hour）": "hour", "天（day）": "day"}
@@ -86,392 +110,356 @@ def _build_date_params() -> dict[str, str]:
     }
 
 
-# ── D4-4: Metric cards 改打 unified-summary ──────────────────────────────────
-st.subheader("統合摘要統計")
-
-_SOURCE_OPTIONS = {"兩者（即時+錄入）": "both", "僅即時資料": "realtime", "僅錄入資料": "records"}
-source_label = st.selectbox("資料來源", list(_SOURCE_OPTIONS.keys()), index=0, key="summary_source")
-source_val = _SOURCE_OPTIONS[source_label]
+# ── T7.3: 4 個 KPI cards（打 summary endpoint）────────────────────────────────
+st.subheader("資料摘要")
 
 
 @st.cache_data(ttl=30)
-def _fetch_unified_summary(date_from: str, date_to: str, source: str) -> dict:
-    params: dict = {"date_from": date_from, "date_to": date_to, "source": source}
-    resp = client.get("/analytics/unified-summary", params=params)
+def _fetch_summary(date_from: str, date_to: str, sources_key: str) -> dict:
+    params: dict = {"date_from": date_from, "date_to": date_to}
+    if sources_key:
+        params["sources"] = sources_key.split(",")
+    resp = client.get("/analytics/summary", params=params)
     if resp.status_code == 200:
         return resp.json()
     return {}
 
 
-with st.spinner("載入統合摘要..."):
+sources_cache_key = ",".join(sorted(f_sources)) if f_sources else ""
+
+with st.spinner("載入統計摘要..."):
     try:
         dp = _build_date_params()
-        unified = _fetch_unified_summary(dp["date_from"], dp["date_to"], source_val)
+        summary_data = _fetch_summary(dp["date_from"], dp["date_to"], sources_cache_key)
     except Exception as exc:
-        st.error(f"無法取得統合摘要：{exc}")
-        unified = {}
+        st.error(f"無法取得統計摘要：{exc}")
+        summary_data = {}
 
-if unified:
-    combined = unified.get("combined", {})
-    realtime_info = unified.get("realtime", {})
-    records_info = unified.get("records", {})
+if summary_data:
+    total_count = summary_data.get("total", 0)
+    anomaly_count = summary_data.get("anomaly_count", 0)
+    anomaly_rate = summary_data.get("anomaly_rate", 0.0)
 
-    m1, m2, m3, m4 = st.columns(4)
-    m1.metric("合計筆數", combined.get("total", "—"))
-    m2.metric("合計異常", combined.get("anomaly_count", "—"))
-    m3.metric("即時資料筆數", realtime_info.get("total", "—"))
-    m4.metric("錄入資料筆數", records_info.get("total", "—"))
+    # 時間範圍天數
+    try:
+        days_delta = (f_date_to - f_date_from).days + 1
+    except Exception:
+        days_delta = "—"
 
-    # 即時資料 metric 詳情
-    rt_metrics = realtime_info.get("metrics", {})
-    if rt_metrics:
-        st.subheader("即時資料各 Metric 摘要")
-        metric_zh = {
-            "temperature": "溫度(C)",
-            "humidity": "濕度(%)",
-            "pressure": "氣壓(hPa)",
-            "voltage": "電壓(V)",
-            "cpu_usage": "CPU(%)",
-        }
-        rows = []
-        for m_key, m_data in rt_metrics.items():
-            rows.append({
-                "Metric": metric_zh.get(m_key, m_key),
-                "平均": f"{m_data.get('avg', 0):.2f}" if m_data.get("avg") is not None else "—",
-                "最小": f"{m_data.get('min', 0):.2f}" if m_data.get("min") is not None else "—",
-                "最大": f"{m_data.get('max', 0):.2f}" if m_data.get("max") is not None else "—",
-                "異常筆數": m_data.get("anomaly_count", 0),
-            })
-        if rows:
-            st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+    # T7.3: 4 個 KPI cards
+    kpi_col1, kpi_col2, kpi_col3, kpi_col4 = st.columns(4)
+    kpi_col1.metric("總資料筆數", total_count)
+    kpi_col2.metric("含異常筆數", anomaly_count)
+    kpi_col3.metric(
+        "異常率（%）",
+        f"{anomaly_rate * 100:.1f}%" if isinstance(anomaly_rate, (int, float)) else "—",
+    )
+    kpi_col4.metric("時間範圍（天）", days_delta)
 else:
+    kpi_col1, kpi_col2, kpi_col3, kpi_col4 = st.columns(4)
+    kpi_col1.metric("總資料筆數", "—")
+    kpi_col2.metric("含異常筆數", "—")
+    kpi_col3.metric("異常率（%）", "—")
+    kpi_col4.metric("時間範圍（天）", "—")
     st.info("查詢區間內沒有資料，或後端暫時無法回應。")
 
 st.markdown("---")
 
-# ── D4-3 / D4-5 時間趨勢圖（Q7 fix：正確渲染 buckets）──────────────────────────
-st.subheader("時間趨勢圖")
+# ── T7.3: 5-metric breakdown 表格（5 row × 5 col）────────────────────────────
+st.subheader("各指標統計（5-Metric Breakdown）")
 
-# D4-5: source toggle
-_TREND_SOURCE_OPTIONS = {
-    "錄入資料（data_records）": "records",
-    "即時資料（realtime）": "realtime",
-}
-trend_source_label = st.selectbox("趨勢圖資料來源", list(_TREND_SOURCE_OPTIONS.keys()), index=0, key="trend_source")
-trend_source = _TREND_SOURCE_OPTIONS[trend_source_label]
+if summary_data:
+    per_metric = summary_data.get("per_metric", {})
+    if per_metric:
+        breakdown_rows = []
+        for mk in _METRICS:
+            m_data = per_metric.get(mk, {})
+            breakdown_rows.append({
+                "指標": _METRIC_ZH.get(mk, mk),
+                "平均": f"{m_data.get('avg', 0):.4f}" if m_data.get("avg") is not None else "—",
+                "最小": f"{m_data.get('min', 0):.4f}" if m_data.get("min") is not None else "—",
+                "最大": f"{m_data.get('max', 0):.4f}" if m_data.get("max") is not None else "—",
+                "標準差": f"{m_data.get('std', 0):.4f}" if m_data.get("std") is not None else "—",
+                "異常筆數": m_data.get("anomaly_count", 0),
+            })
+        st.dataframe(pd.DataFrame(breakdown_rows), use_container_width=True, hide_index=True)
+    else:
+        st.info("此區間內無 per-metric 統計資料。")
+else:
+    st.info("統計資料載入中或無資料。")
+
+st.markdown("---")
+
+# ── T7.3: anomaly distribution bar chart（5 metric 異常筆數對比）──────────────
+st.subheader("異常分布（各指標異常筆數）")
+
+if summary_data:
+    per_metric = summary_data.get("per_metric", {})
+    if per_metric:
+        anom_metrics = [_METRIC_ZH.get(mk, mk) for mk in _METRICS]
+        anom_counts = [per_metric.get(mk, {}).get("anomaly_count", 0) for mk in _METRICS]
+        anom_colors = [_METRIC_COLORS.get(mk, "gray") for mk in _METRICS]
+
+        fig_anom = go.Figure(go.Bar(
+            x=anom_metrics,
+            y=anom_counts,
+            marker_color=anom_colors,
+            text=anom_counts,
+            textposition="outside",
+        ))
+        fig_anom.update_layout(
+            title="各指標異常筆數對比",
+            xaxis_title="指標",
+            yaxis_title="異常筆數",
+            margin={"l": 40, "r": 20, "t": 50, "b": 40},
+        )
+        st.plotly_chart(fig_anom, use_container_width=True)
+    else:
+        st.info("此區間內無異常分布資料。")
+else:
+    st.info("統計資料載入中或無資料。")
+
+st.markdown("---")
+
+# ── 時間趨勢圖（per-metric，來自 timerange endpoint）─────────────────────────
+st.subheader("時間趨勢圖")
 
 
 @st.cache_data(ttl=30)
-def _fetch_timerange(date_from: str, date_to: str, bucket: str, category: str | None) -> list[dict]:
+def _fetch_timerange(date_from: str, date_to: str, bucket: str, sources_key: str) -> list[dict]:
     params: dict = {"date_from": date_from, "date_to": date_to, "bucket": bucket}
-    if category:
-        params["category"] = category
+    if sources_key:
+        params["sources"] = sources_key.split(",")
     resp = client.get("/analytics/timerange", params=params)
     if resp.status_code == 200:
         return resp.json().get("buckets", [])
     return []
 
 
+with st.spinner("載入時間趨勢..."):
+    try:
+        dp = _build_date_params()
+        buckets = _fetch_timerange(dp["date_from"], dp["date_to"], f_bucket, sources_cache_key)
+    except Exception as exc:
+        st.error(f"無法取得時間趨勢資料：{exc}")
+        buckets = []
+
+if buckets:
+    df_time = pd.DataFrame(buckets)
+    if "ts" in df_time.columns and not df_time.empty:
+        try:
+            df_time["ts_tw"] = pd.to_datetime(df_time["ts"], utc=True, format="ISO8601").dt.tz_convert("Asia/Taipei")
+        except Exception:
+            df_time["ts_tw"] = df_time["ts"]
+    else:
+        df_time["ts_tw"] = pd.Series(dtype="object")
+
+    # per-metric 子圖
+    available_metrics = [mk for mk in _METRICS if "per_metric" in df_time.columns or any(
+        isinstance(b.get("per_metric"), dict) and mk in b.get("per_metric", {})
+        for b in buckets
+    )]
+    # 從 buckets 解壓 per-metric avg
+    metric_series: dict[str, list] = {mk: [] for mk in _METRICS}
+    for b in buckets:
+        pm = b.get("per_metric") or {}
+        for mk in _METRICS:
+            metric_series[mk].append(pm.get(mk, {}).get("avg") if isinstance(pm.get(mk), dict) else None)
+
+    ts_vals = df_time["ts_tw"].tolist()
+    plotted_metrics = [mk for mk in _METRICS if any(v is not None for v in metric_series[mk])]
+
+    if plotted_metrics:
+        n = len(plotted_metrics)
+        fig_trend = make_subplots(
+            rows=n,
+            cols=1,
+            shared_xaxes=True,
+            vertical_spacing=0.04,
+            subplot_titles=[_METRIC_ZH.get(mk, mk) for mk in plotted_metrics],
+        )
+        for idx, mk in enumerate(plotted_metrics, start=1):
+            fig_trend.add_trace(
+                go.Scatter(
+                    x=ts_vals,
+                    y=metric_series[mk],
+                    mode="lines+markers",
+                    name=_METRIC_ZH.get(mk, mk),
+                    line={"color": _METRIC_COLORS.get(mk, "gray"), "width": 2},
+                    marker={"size": 6},
+                    showlegend=False,
+                ),
+                row=idx,
+                col=1,
+            )
+            # 異常 bucket 標記
+            anom_y = []
+            anom_x = []
+            for i, b in enumerate(buckets):
+                pm = b.get("per_metric") or {}
+                mk_data = pm.get(mk, {})
+                if isinstance(mk_data, dict) and mk_data.get("anomaly_count", 0) > 0:
+                    anom_x.append(ts_vals[i])
+                    anom_y.append(metric_series[mk][i])
+            if anom_x:
+                fig_trend.add_trace(
+                    go.Scatter(
+                        x=anom_x,
+                        y=anom_y,
+                        mode="markers",
+                        marker={"color": "red", "size": 10, "symbol": "x"},
+                        showlegend=False,
+                    ),
+                    row=idx,
+                    col=1,
+                )
+
+        fig_trend.update_layout(
+            title=f"各指標時間趨勢（{f_bucket_label}）",
+            height=min(180 * n, 900),
+            margin={"l": 60, "r": 20, "t": 60, "b": 40},
+            uirevision="trend_chart",
+        )
+        fig_trend.update_xaxes(title_text="時間（台北）", row=n, col=1)
+        st.plotly_chart(fig_trend, use_container_width=True)
+        st.caption(
+            f"{'day' if f_bucket == 'day' else 'hour'} bucket：每{'日' if f_bucket == 'day' else '小時'} 1 點；"
+            "紅叉 = 含異常。"
+        )
+    else:
+        st.info("此區間內無時間趨勢資料。")
+else:
+    st.info("此區間內無時間趨勢資料。")
+
+st.markdown("---")
+
+# ── T7.3: per-metric breakdown（取代「分類聚合」）────────────────────────────
+st.subheader("各指標彙整（Per-Metric Breakdown）")
+
+
 @st.cache_data(ttl=30)
-def _fetch_realtime_categories(date_from: str, date_to: str) -> list[dict]:
+def _fetch_categories(date_from: str, date_to: str, sources_key: str) -> list[dict]:
     params: dict = {"date_from": date_from, "date_to": date_to}
-    resp = client.get("/analytics/realtime-categories", params=params)
+    if sources_key:
+        params["sources"] = sources_key.split(",")
+    resp = client.get("/analytics/categories", params=params)
     if resp.status_code == 200:
         return resp.json().get("metrics", [])
     return []
 
 
-@st.cache_data(ttl=10)
-def _fetch_realtime_history_trend() -> list[dict]:
-    """取得最近 60 分鐘即時資料 wide snapshots（BE 最大 3600 秒）。"""
-    resp = client.get("/realtime/history", params={"seconds": 3600})
-    if resp.status_code == 200:
-        return resp.json().get("snapshots", [])
-    return []
-
-
-with st.spinner("載入時間趨勢..."):
+with st.spinner("載入指標彙整..."):
     try:
         dp = _build_date_params()
-        if trend_source == "records":
-            buckets = _fetch_timerange(dp["date_from"], dp["date_to"], f_bucket, f_category)
-        else:
-            # 即時資料用 realtime-categories 的彙總，展示各 metric 分佈
-            buckets = []
+        metric_items = _fetch_categories(dp["date_from"], dp["date_to"], sources_cache_key)
     except Exception as exc:
-        st.error(f"無法取得時間趨勢資料：{exc}")
-        buckets = []
+        st.error(f"無法取得指標彙整資料：{exc}")
+        metric_items = []
 
-if trend_source == "records":
-    if buckets:
-        df_time = pd.DataFrame(buckets)
-        # Q7 fix：確保 ts 欄位存在且能正確解析
-        if "ts" in df_time.columns and not df_time.empty:
-            try:
-                df_time["ts_tw"] = pd.to_datetime(df_time["ts"], utc=True, format="ISO8601").dt.tz_convert("Asia/Taipei")
-            except Exception:
-                # fallback：直接用原始字串
-                df_time["ts_tw"] = df_time["ts"]
-        else:
-            df_time["ts_tw"] = pd.Series(dtype="object")
+if metric_items:
+    df_metrics = pd.DataFrame(metric_items)
+    rename_map = {
+        "metric": "指標",
+        "count": "筆數",
+        "avg": "平均值",
+        "min": "最小值",
+        "max": "最大值",
+        "anomaly_count": "異常筆數",
+    }
+    # 顯示用中文指標名稱
+    if "metric" in df_metrics.columns:
+        df_metrics["metric"] = df_metrics["metric"].apply(lambda m: _METRIC_ZH.get(m, m))
+    df_metrics_show = df_metrics.rename(columns={k: v for k, v in rename_map.items() if k in df_metrics.columns})
+    st.dataframe(df_metrics_show, use_container_width=True, hide_index=True)
 
-        fig_line = go.Figure()
+    # 筆數 + 異常數 bar chart
+    if "指標" in df_metrics_show.columns or "metric" in df_metrics.columns:
+        x_vals = df_metrics_show.get("指標", df_metrics.get("metric", pd.Series())).tolist()
+        cnt_vals = df_metrics.get("count", pd.Series([0] * len(x_vals))).tolist()
+        anom_vals = df_metrics.get("anomaly_count", pd.Series([0] * len(x_vals))).tolist()
 
-        # 主折線（avg_value）— 視覺強化：線粗 3、marker 變大、填充陰影
-        if "avg_value" in df_time.columns:
-            fig_line.add_trace(go.Scatter(
-                x=df_time["ts_tw"],
-                y=df_time["avg_value"],
-                mode="lines+markers",
-                name="平均值",
-                line={"color": "royalblue", "width": 3},
-                marker={"size": 10, "symbol": "circle"},
-                fill="tozeroy",
-                fillcolor="rgba(65,105,225,0.15)",
-            ))
-
-            # 在每個 marker 上方加 count 筆數 annotation
-            if "count" in df_time.columns and not df_time.empty:
-                for _, row in df_time.iterrows():
-                    if pd.notna(row["avg_value"]) and pd.notna(row.get("count")):
-                        fig_line.add_annotation(
-                            x=row["ts_tw"], y=row["avg_value"],
-                            text=f"{int(row['count'])} 筆", showarrow=False,
-                            yshift=15, font=dict(size=10, color="gray"),
-                        )
-
-        # 筆數（count）次要折線
-        if "count" in df_time.columns:
-            fig_line.add_trace(go.Scatter(
-                x=df_time["ts_tw"],
-                y=df_time["count"],
-                mode="lines",
-                name="筆數",
-                line={"color": "green", "dash": "dot"},
-                yaxis="y2",
-                visible="legendonly",
-            ))
-
-        # 標記異常 bucket
-        if "anomaly_count" in df_time.columns:
-            anomaly_df = df_time[df_time["anomaly_count"] > 0]
-            if not anomaly_df.empty and "avg_value" in anomaly_df.columns:
-                fig_line.add_trace(go.Scatter(
-                    x=anomaly_df["ts_tw"],
-                    y=anomaly_df["avg_value"],
-                    mode="markers",
-                    name="含異常",
-                    marker={"color": "red", "size": 12, "symbol": "x"},
-                    hovertext=anomaly_df["anomaly_count"].apply(lambda c: f"{c} 筆異常"),
-                ))
-
-        fig_line.update_layout(
-            title=f"時間趨勢（{f_bucket_label}）{'— ' + f_category if f_category else '— 全類別'}（錄入資料）",
-            xaxis_title="時間（台北）",
-            yaxis_title="數值",
-            legend={"orientation": "h", "y": -0.2},
-            margin={"l": 40, "r": 20, "t": 50, "b": 80},
-        )
-        st.plotly_chart(fig_line, use_container_width=True)
-        st.caption(f"{'day' if f_bucket == 'day' else 'hour'} bucket：每{'日' if f_bucket == 'day' else '小時'} 1 點；如資料少請改 {'hour 粒度' if f_bucket == 'day' else 'day 粒度'}看更{'詳細' if f_bucket == 'day' else '匯總'}。")
-    else:
-        st.info("此區間內無時間趨勢資料。")
+        chart_col1, chart_col2 = st.columns(2)
+        with chart_col1:
+            fig_bc = go.Figure(go.Bar(x=x_vals, y=cnt_vals, marker_color="steelblue"))
+            fig_bc.update_layout(title="各指標筆數", xaxis_title="指標", yaxis_title="筆數", margin={"l": 40, "r": 20, "t": 50, "b": 40})
+            st.plotly_chart(fig_bc, use_container_width=True)
+        with chart_col2:
+            fig_ac = go.Figure(go.Bar(x=x_vals, y=anom_vals, marker_color="crimson"))
+            fig_ac.update_layout(title="各指標異常筆數", xaxis_title="指標", yaxis_title="異常筆數", margin={"l": 40, "r": 20, "t": 50, "b": 40})
+            st.plotly_chart(fig_ac, use_container_width=True)
 else:
-    # 即時資料：真正的時間趨勢折線圖（過去 60 分鐘，5 metric 各自獨立 Y 軸）
-    _RT_METRIC_KEYS = ["temperature", "humidity", "pressure", "voltage", "cpu_usage"]
-    _RT_METRIC_ZH = {
-        "temperature": "溫度(C)",
-        "humidity": "濕度(%)",
-        "pressure": "氣壓(hPa)",
-        "voltage": "電壓(V)",
-        "cpu_usage": "CPU(%)",
-    }
-    _RT_METRIC_COLORS = {
-        "temperature": "royalblue",
-        "humidity": "green",
-        "pressure": "orange",
-        "voltage": "purple",
-        "cpu_usage": "teal",
-    }
-
-    with st.spinner("載入即時資料趨勢..."):
-        try:
-            rt_snapshots = _fetch_realtime_history_trend()
-        except Exception as exc:
-            st.error(f"無法取得即時資料趨勢：{exc}")
-            rt_snapshots = []
-
-    if rt_snapshots:
-        df_rt_hist = pd.DataFrame(rt_snapshots)
-        # 轉換時間軸為台北時間
-        if "ts" in df_rt_hist.columns and not df_rt_hist.empty:
-            try:
-                df_rt_hist["ts_tw"] = pd.to_datetime(df_rt_hist["ts"], utc=True, format="ISO8601").dt.tz_convert("Asia/Taipei")
-            except Exception:
-                df_rt_hist["ts_tw"] = df_rt_hist["ts"]
-        else:
-            df_rt_hist["ts_tw"] = pd.Series(dtype="object")
-
-        # 取交集（只顯示 DataFrame 中實際存在的 metric 欄位）
-        available_metrics = [m for m in _RT_METRIC_KEYS if m in df_rt_hist.columns]
-        n_selected = len(available_metrics)
-
-        if n_selected > 0:
-            # 使用 spike-results.md A.5 公式：height=min(180*n, 900)、shared_xaxes=True
-            fig_rt_trend = make_subplots(
-                rows=n_selected,
-                cols=1,
-                shared_xaxes=True,
-                vertical_spacing=0.04,
-                subplot_titles=[_RT_METRIC_ZH.get(m, m) for m in available_metrics],
-            )
-
-            for idx, metric_key in enumerate(available_metrics, start=1):
-                df_rt_hist[f"{metric_key}_float"] = pd.to_numeric(df_rt_hist[metric_key], errors="coerce")
-
-                fig_rt_trend.add_trace(
-                    go.Scatter(
-                        x=df_rt_hist["ts_tw"],
-                        y=df_rt_hist[f"{metric_key}_float"],
-                        mode="lines",
-                        name=_RT_METRIC_ZH.get(metric_key, metric_key),
-                        line={"color": _RT_METRIC_COLORS.get(metric_key, "gray"), "width": 2},
-                        showlegend=False,
-                    ),
-                    row=idx, col=1,
-                )
-
-                # 異常點標記
-                if "anomaly_flags" in df_rt_hist.columns:
-                    anom_mask = df_rt_hist.apply(
-                        lambda r, mk=metric_key: bool(
-                            r.get("anomaly_flags", {}).get(mk, False)
-                            if isinstance(r.get("anomaly_flags"), dict)
-                            else False
-                        ),
-                        axis=1,
-                    )
-                    anom_df = df_rt_hist[anom_mask]
-                    if not anom_df.empty:
-                        fig_rt_trend.add_trace(
-                            go.Scatter(
-                                x=anom_df["ts_tw"],
-                                y=anom_df[f"{metric_key}_float"],
-                                mode="markers",
-                                marker={
-                                    "color": "red",
-                                    "size": 10,
-                                    "symbol": "circle-open",
-                                    "line": {"width": 2, "color": "red"},
-                                },
-                                showlegend=False,
-                            ),
-                            row=idx, col=1,
-                        )
-
-            fig_rt_trend.update_layout(
-                title="即時資料趨勢（過去 60 分鐘）",
-                height=min(180 * n_selected, 900),
-                margin={"l": 60, "r": 20, "t": 60, "b": 40},
-                uirevision="rt_trend_chart",
-                showlegend=False,
-            )
-            fig_rt_trend.update_xaxes(title_text="時間（台北）", row=n_selected, col=1)
-
-            st.plotly_chart(fig_rt_trend, use_container_width=True)
-            st.caption("即時資料時間趨勢顯示過去 60 分鐘；如需更長範圍請看「錄入資料」source（支援 30 天）。")
-        else:
-            st.info("即時資料欄位不足，無法繪製趨勢圖。")
-    else:
-        st.info("此時間內無即時資料，或後端尚未啟動 simulator（等待 simulator 預熱後重新整理）。")
+    st.info("此區間內無指標彙整資料。")
 
 st.markdown("---")
 
-# ── D4-6: 類別分佈（source toggle）─────────────────────────────────────────────
-st.subheader("類別分佈")
-
-_CAT_SOURCE_OPTIONS = {
-    "錄入資料（data_records）": "records",
-    "即時資料（realtime）": "realtime",
-}
-cat_source_label = st.selectbox("分佈資料來源", list(_CAT_SOURCE_OPTIONS.keys()), index=0, key="cat_source")
-cat_source = _CAT_SOURCE_OPTIONS[cat_source_label]
+# ── T7.3: 保留 user / simulator / realtime 三 source unified-summary ────
+st.subheader("即時 vs 錄入 資料總覽")
 
 
 @st.cache_data(ttl=30)
-def _fetch_categories(date_from: str, date_to: str) -> list[dict]:
+def _fetch_unified_summary(date_from: str, date_to: str, sources_key: str) -> dict:
     params: dict = {"date_from": date_from, "date_to": date_to}
-    resp = client.get("/analytics/categories", params=params)
+    if sources_key:
+        params["sources"] = sources_key.split(",")
+    resp = client.get("/analytics/unified-summary", params=params)
     if resp.status_code == 200:
-        return resp.json().get("categories", [])
-    return []
+        return resp.json()
+    return {}
 
 
-with st.spinner("載入類別分佈..."):
+with st.spinner("載入來源總覽..."):
     try:
         dp = _build_date_params()
-        if cat_source == "records":
-            cat_items = _fetch_categories(dp["date_from"], dp["date_to"])
-            cat_col_name = "category"
-            cat_label = "類別"
-        else:
-            cat_items = _fetch_realtime_categories(dp["date_from"], dp["date_to"])
-            cat_col_name = "metric"
-            cat_label = "Metric"
+        unified = _fetch_unified_summary(dp["date_from"], dp["date_to"], sources_cache_key)
     except Exception as exc:
-        st.error(f"無法取得類別分佈資料：{exc}")
-        cat_items = []
-        cat_col_name = "category"
-        cat_label = "類別"
+        st.error(f"無法取得來源總覽：{exc}")
+        unified = {}
 
-if cat_items:
-    df_cat = pd.DataFrame(cat_items)
-    if "count" in df_cat.columns and cat_col_name in df_cat.columns:
-        df_cat = df_cat.sort_values("count", ascending=False)
+if unified:
+    total_unified = unified.get("total", 0)
+    anomaly_unified = unified.get("anomaly_count", 0)
 
-    bar_col1, bar_col2 = st.columns(2)
+    # per-source breakdown（user / simulator_data_records / realtime）
+    user_stat = unified.get("user") or {}
+    sim_stat = unified.get("simulator_data_records") or {}
+    rt_stat = unified.get("realtime") or {}
 
-    with bar_col1:
-        fig_bar_count = go.Figure(go.Bar(
-            x=df_cat.get(cat_col_name, []),
-            y=df_cat.get("count", []),
-            marker_color="steelblue",
-        ))
-        fig_bar_count.update_layout(
-            title=f"各{cat_label}筆數",
-            xaxis_title=cat_label,
-            yaxis_title="筆數",
-            margin={"l": 40, "r": 20, "t": 50, "b": 40},
-        )
-        st.plotly_chart(fig_bar_count, use_container_width=True)
+    u_col1, u_col2, u_col3, u_col4 = st.columns(4)
+    u_col1.metric("合計筆數", total_unified)
+    u_col2.metric("合計異常", anomaly_unified)
+    u_col3.metric(
+        "錄入資料筆數",
+        user_stat.get("count", "—"),
+    )
+    u_col4.metric(
+        "即時資料筆數（串流）",
+        rt_stat.get("count", "—"),
+    )
 
-    with bar_col2:
-        avg_col = "avg_value" if cat_source == "records" else "avg"
-        if avg_col in df_cat.columns:
-            fig_bar_avg = go.Figure(go.Bar(
-                x=df_cat.get(cat_col_name, []),
-                y=df_cat.get(avg_col, []),
-                marker_color="darkorange",
-            ))
-            fig_bar_avg.update_layout(
-                title=f"各{cat_label}平均值",
-                xaxis_title=cat_label,
-                yaxis_title="平均",
-                margin={"l": 40, "r": 20, "t": 50, "b": 40},
-            )
-            st.plotly_chart(fig_bar_avg, use_container_width=True)
-
-    # 類別詳細表格
-    st.subheader("類別詳細資料")
-    display_df = df_cat.copy()
-    if cat_source == "records":
-        rename_map = {"category": "類別", "count": "筆數", "avg_value": "平均值", "anomaly_count": "異常筆數"}
-    else:
-        rename_map = {"metric": "Metric", "count": "筆數", "avg": "平均值", "anomaly_count": "異常筆數"}
-    display_df = display_df.rename(columns={k: v for k, v in rename_map.items() if k in display_df.columns})
-    st.dataframe(display_df, use_container_width=True, hide_index=True)
+    # source breakdown 表
+    src_rows = []
+    if user_stat:
+        src_rows.append({
+            "來源": "錄入資料（手動輸入 / CSV 匯入）",
+            "筆數": user_stat.get("count", 0),
+            "異常筆數": user_stat.get("anomaly_count", 0),
+        })
+    if sim_stat:
+        src_rows.append({
+            "來源": "即時資料（已歸檔）",
+            "筆數": sim_stat.get("count", 0),
+            "異常筆數": sim_stat.get("anomaly_count", 0),
+        })
+    if rt_stat:
+        src_rows.append({
+            "來源": "即時資料（串流中）",
+            "筆數": rt_stat.get("count", 0),
+            "異常筆數": rt_stat.get("anomaly_count", 0),
+        })
+    if src_rows:
+        st.dataframe(pd.DataFrame(src_rows), use_container_width=True, hide_index=True)
 else:
-    st.info("此區間內無類別分佈資料。")
+    st.info("查詢區間內沒有來源資料，或後端暫時無法回應。")
 
 st.markdown("---")
 
@@ -481,10 +469,11 @@ st.subheader("匯出資料")
 dl_col1, dl_col2 = st.columns([2, 2])
 
 with dl_col1:
+    _SOURCE_ZH = {"user": "錄入資料", "simulator": "即時資料"}
+    source_label_str = "、".join(_SOURCE_ZH.get(s, s) for s in f_sources) if f_sources else "全部"
     st.markdown(
         "點擊下方按鈕匯出目前篩選條件的資料為 **Excel (.xlsx)** 格式。  \n"
-        f"篩選：{f_date_from} ~ {f_date_to}"
-        + (f"，類別：{f_category}" if f_category else "，類別：全部"),
+        f"篩選：{f_date_from} ~ {f_date_to}，來源：{source_label_str}",
     )
 
 with dl_col2:
@@ -496,8 +485,8 @@ with dl_col2:
                     "date_to": f_date_to.isoformat() + "T23:59:59Z",
                     "format": "xlsx",
                 }
-                if f_category:
-                    export_params["category"] = f_category
+                if f_sources:
+                    export_params["sources"] = f_sources
 
                 resp_export = client.get("/analytics/export", params=export_params)
 

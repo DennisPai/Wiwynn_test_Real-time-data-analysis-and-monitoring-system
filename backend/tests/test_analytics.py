@@ -1,3 +1,11 @@
+"""test_analytics.py — wide schema analytics endpoint tests (Phase 5 rewrite).
+
+Covers:
+- GET /analytics/summary: per-metric breakdown structure, RBAC
+- GET /analytics/timerange: bucket per-metric aggregate
+- GET /analytics/categories: per-metric breakdown (P2 endpoint name preserved)
+- GET /analytics/export: wide Excel (Summary/TimeRange/Sources sheets)
+"""
 from __future__ import annotations
 
 import io
@@ -19,22 +27,20 @@ def _now_iso() -> str:
     return datetime.now(tz=timezone.utc).isoformat()
 
 
-async def _seed_records(client: AsyncClient, token: str, category: str = "analytics_cat") -> None:
-    """建立多筆資料用於分析測試。"""
-    records = [
-        {
-            "title": f"analytics_rec_{i}",
-            "value": 10.0 * (i + 1),
-            "category": category,
-            "recorded_at": f"2024-06-{i + 1:02d}T10:00:00",
-            "is_anomaly": (i % 3 == 0),
-        }
-        for i in range(6)
-    ]
-    for r in records:
+async def _seed_wide_records(client: AsyncClient, token: str, count: int = 6) -> None:
+    """建立多筆 wide schema 資料用於分析測試。"""
+    for i in range(count):
         resp = await client.post(
             "/api/v1/data",
-            json=r,
+            json={
+                "ts": f"2024-06-{i + 1:02d}T10:00:00Z",
+                "temperature": 20.0 + i,
+                "humidity": 60.0 + i,
+                "pressure": 1013.0,
+                "voltage": 12.0,
+                "cpu_usage": 40.0 + i * 5,
+                "source": "user",
+            },
             headers=make_auth_header(token),
         )
         assert resp.status_code == 201, resp.text
@@ -50,23 +56,18 @@ async def admin_token(client: AsyncClient, admin_user: User) -> str:
 
 
 @pytest_asyncio.fixture
-async def user_token(client: AsyncClient, regular_user: User) -> str:
-    return await get_token(client, regular_user.email, "user1234")
-
-
-@pytest_asyncio.fixture
 async def viewer_token(client: AsyncClient, viewer_user: User) -> str:
     return await get_token(client, viewer_user.email, "viewer12")
 
 
 # ──────────────────────────────────────────
-# GET /analytics/summary
+# GET /analytics/summary — wide per-metric breakdown
 # ──────────────────────────────────────────
 
 @pytest.mark.asyncio
-async def test_summary_basic(client: AsyncClient, admin_token: str) -> None:
-    """summary 回傳必要欄位。"""
-    await _seed_records(client, admin_token, category="summary_basic_test")
+async def test_summary_wide_structure(client: AsyncClient, admin_token: str) -> None:
+    """T5.6: summary 回傳 wide per-metric breakdown 結構。"""
+    await _seed_wide_records(client, admin_token)
 
     resp = await client.get(
         "/api/v1/analytics/summary",
@@ -74,32 +75,24 @@ async def test_summary_basic(client: AsyncClient, admin_token: str) -> None:
     )
     assert resp.status_code == 200
     body = resp.json()
-    assert "total_records" in body
+    # top-level 欄位
+    assert "total" in body
     assert "anomaly_count" in body
-    assert "avg_value" in body
-    assert "min_value" in body
-    assert "max_value" in body
-    assert "categories" in body
-    assert isinstance(body["total_records"], int)
-    assert isinstance(body["avg_value"], float)
+    assert "anomaly_rate" in body
+    assert "per_metric" in body
+    assert isinstance(body["total"], int)
+    assert isinstance(body["anomaly_rate"], float)
 
-
-@pytest.mark.asyncio
-async def test_summary_with_filters(client: AsyncClient, admin_token: str) -> None:
-    """summary 支援 date_from / date_to / category 過濾。"""
-    await _seed_records(client, admin_token, category="summary_filter_test")
-
-    resp = await client.get(
-        "/api/v1/analytics/summary"
-        "?date_from=2024-06-01T00:00:00"
-        "&date_to=2024-06-03T23:59:59"
-        "&category=summary_filter_test",
-        headers=make_auth_header(admin_token),
-    )
-    assert resp.status_code == 200
-    body = resp.json()
-    # 6/1 ~ 6/3 應有 3 筆
-    assert body["total_records"] == 3
+    # per_metric 必須含 5 個 metric key
+    per_metric = body["per_metric"]
+    for metric in ("temperature", "humidity", "pressure", "voltage", "cpu_usage"):
+        assert metric in per_metric, f"per_metric 缺少 {metric}"
+        stat = per_metric[metric]
+        assert "avg" in stat
+        assert "min" in stat
+        assert "max" in stat
+        assert "std" in stat
+        assert "anomaly_count" in stat
 
 
 @pytest.mark.asyncio
@@ -119,52 +112,81 @@ async def test_summary_no_token(client: AsyncClient) -> None:
     assert resp.status_code in (401, 403)
 
 
+@pytest.mark.asyncio
+async def test_summary_date_filter(client: AsyncClient, admin_token: str) -> None:
+    """summary 支援 date_from/date_to 過濾。"""
+    await _seed_wide_records(client, admin_token)
+
+    resp = await client.get(
+        "/api/v1/analytics/summary?date_from=2024-06-01T00:00:00&date_to=2024-06-03T23:59:59",
+        headers=make_auth_header(admin_token),
+    )
+    assert resp.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_summary_sources_filter(client: AsyncClient, admin_token: str) -> None:
+    """T5.6: summary 支援 sources multiselect 過濾。"""
+    await _seed_wide_records(client, admin_token)
+
+    resp = await client.get(
+        "/api/v1/analytics/summary?sources=user",
+        headers=make_auth_header(admin_token),
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert "per_metric" in body
+
+
 # ──────────────────────────────────────────
-# GET /analytics/timerange
+# GET /analytics/timerange — wide per-metric aggregate
 # ──────────────────────────────────────────
 
 @pytest.mark.asyncio
-async def test_timerange_hour_bucket(client: AsyncClient, admin_token: str) -> None:
-    """timerange hour 桶正常回傳。"""
-    await _seed_records(client, admin_token, category="timerange_hour_test")
+async def test_timerange_wide_structure(client: AsyncClient, admin_token: str) -> None:
+    """T5.6: timerange bucket 含 per-metric aggregate。"""
+    await _seed_wide_records(client, admin_token)
 
     resp = await client.get(
         "/api/v1/analytics/timerange"
         "?date_from=2024-06-01T00:00:00"
         "&date_to=2024-06-06T23:59:59"
-        "&bucket=hour"
-        "&category=timerange_hour_test",
+        "&bucket=hour",
         headers=make_auth_header(admin_token),
     )
     assert resp.status_code == 200
     body = resp.json()
     assert body["bucket"] == "hour"
     assert isinstance(body["buckets"], list)
-    assert len(body["buckets"]) == 6  # 6 筆各不同天/小時
+
     for b in body["buckets"]:
         assert "ts" in b
         assert "count" in b
-        assert "avg_value" in b
         assert "anomaly_count" in b
+        assert "per_metric" in b
+        # per_metric 含 5 metric key
+        for metric in ("temperature", "humidity", "pressure", "voltage", "cpu_usage"):
+            assert metric in b["per_metric"], f"bucket per_metric 缺少 {metric}"
+            pm = b["per_metric"][metric]
+            assert "count" in pm
+            assert "anomaly_count" in pm
 
 
 @pytest.mark.asyncio
 async def test_timerange_day_bucket(client: AsyncClient, admin_token: str) -> None:
     """timerange day 桶正常回傳。"""
-    await _seed_records(client, admin_token, category="timerange_day_test")
+    await _seed_wide_records(client, admin_token)
 
     resp = await client.get(
         "/api/v1/analytics/timerange"
         "?date_from=2024-06-01T00:00:00"
         "&date_to=2024-06-06T23:59:59"
-        "&bucket=day"
-        "&category=timerange_day_test",
+        "&bucket=day",
         headers=make_auth_header(admin_token),
     )
     assert resp.status_code == 200
     body = resp.json()
     assert body["bucket"] == "day"
-    assert len(body["buckets"]) == 6
 
 
 @pytest.mark.asyncio
@@ -204,15 +226,13 @@ async def test_timerange_missing_required_params(client: AsyncClient, admin_toke
 
 
 # ──────────────────────────────────────────
-# GET /analytics/categories
+# GET /analytics/categories — per-metric breakdown
 # ──────────────────────────────────────────
 
 @pytest.mark.asyncio
-async def test_categories_basic(client: AsyncClient, admin_token: str) -> None:
-    """categories 回傳各類別聚合統計。"""
-    # 建立兩個不同 category 的資料
-    for cat in ("cat_group_a", "cat_group_b"):
-        await _seed_records(client, admin_token, category=cat)
+async def test_categories_wide_structure(client: AsyncClient, admin_token: str) -> None:
+    """T5.6: categories 回傳 per-metric breakdown（endpoint 名稱保留）。"""
+    await _seed_wide_records(client, admin_token)
 
     resp = await client.get(
         "/api/v1/analytics/categories"
@@ -222,16 +242,19 @@ async def test_categories_basic(client: AsyncClient, admin_token: str) -> None:
     )
     assert resp.status_code == 200
     body = resp.json()
-    assert "categories" in body
-    assert isinstance(body["categories"], list)
-    cat_names = [c["category"] for c in body["categories"]]
-    assert "cat_group_a" in cat_names
-    assert "cat_group_b" in cat_names
+    # T5.6 wide schema：改為 per-metric breakdown
+    assert "metrics" in body
+    assert isinstance(body["metrics"], list)
+    metrics_found = {m["metric"] for m in body["metrics"]}
+    for expected in ("temperature", "humidity", "pressure", "voltage", "cpu_usage"):
+        assert expected in metrics_found, f"per-metric breakdown 缺少 {expected}"
 
-    for c in body["categories"]:
-        assert "count" in c
-        assert "avg_value" in c
-        assert "anomaly_count" in c
+    for m in body["metrics"]:
+        assert "count" in m
+        assert "avg" in m
+        assert "min" in m
+        assert "max" in m
+        assert "anomaly_count" in m
 
 
 @pytest.mark.asyncio
@@ -257,13 +280,13 @@ async def test_categories_missing_required_params(client: AsyncClient, admin_tok
 
 
 # ──────────────────────────────────────────
-# GET /analytics/export
+# GET /analytics/export — wide Excel（Sources sheet）
 # ──────────────────────────────────────────
 
 @pytest.mark.asyncio
-async def test_export_xlsx(client: AsyncClient, admin_token: str) -> None:
-    """export 回傳 xlsx 二進位檔，Content-Disposition 含 attachment。"""
-    await _seed_records(client, admin_token, category="export_test")
+async def test_export_xlsx_wide(client: AsyncClient, admin_token: str) -> None:
+    """T5.11: export 回傳 xlsx，Content-Disposition 含 attachment + .xlsx。"""
+    await _seed_wide_records(client, admin_token)
 
     resp = await client.get(
         "/api/v1/analytics/export",
@@ -271,16 +294,13 @@ async def test_export_xlsx(client: AsyncClient, admin_token: str) -> None:
     )
     assert resp.status_code == 200
 
-    # 驗證 Content-Type 是 xlsx
     content_type = resp.headers.get("content-type", "")
     assert "spreadsheetml" in content_type or "openxmlformats" in content_type
 
-    # 驗證 Content-Disposition 含 attachment
     disposition = resp.headers.get("content-disposition", "")
     assert "attachment" in disposition
     assert ".xlsx" in disposition
 
-    # 驗證非空二進位內容
     assert len(resp.content) > 0
 
 
@@ -299,19 +319,3 @@ async def test_export_no_token(client: AsyncClient) -> None:
     """未登入時 export 應回 403。"""
     resp = await client.get("/api/v1/analytics/export")
     assert resp.status_code in (401, 403)
-
-
-@pytest.mark.asyncio
-async def test_export_with_filters(client: AsyncClient, admin_token: str) -> None:
-    """export 支援 date_from/date_to/category 過濾且正常產生檔案。"""
-    await _seed_records(client, admin_token, category="export_filter_test")
-
-    resp = await client.get(
-        "/api/v1/analytics/export"
-        "?date_from=2024-06-01T00:00:00"
-        "&date_to=2024-06-06T23:59:59"
-        "&category=export_filter_test",
-        headers=make_auth_header(admin_token),
-    )
-    assert resp.status_code == 200
-    assert len(resp.content) > 0

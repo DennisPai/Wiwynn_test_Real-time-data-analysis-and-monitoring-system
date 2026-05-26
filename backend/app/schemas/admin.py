@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, model_validator
 
 
 class AuditLogResponse(BaseModel):
@@ -60,3 +60,30 @@ class AppSettingResponse(BaseModel):
 
 class AppSettingUpdate(BaseModel):
     value: str
+
+
+# T5.9: PATCH /api/v1/admin/settings（anomaly threshold）schema
+
+class MetricThreshold(BaseModel):
+    """單一 metric 的 high/low threshold。high 必須嚴格大於 low。"""
+    high: float
+    low: float
+
+    @model_validator(mode="after")
+    def high_must_be_greater_than_low(self) -> "MetricThreshold":
+        if self.high <= self.low:
+            raise ValueError(
+                f"high（{self.high}）必須嚴格大於 low（{self.low}）"
+            )
+        return self
+
+
+class AnomalyThresholdUpdate(BaseModel):
+    """PATCH /api/v1/admin/settings body: anomaly_threshold per-metric dict。"""
+    anomaly_threshold: dict[str, MetricThreshold]
+
+
+class AnomalyThresholdResponse(BaseModel):
+    """PATCH /api/v1/admin/settings response。"""
+    updated_keys: list[str]
+    anomaly_threshold: dict[str, MetricThreshold]

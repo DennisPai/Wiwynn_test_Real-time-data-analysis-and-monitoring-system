@@ -1,3 +1,10 @@
+"""excel_exporter.py — T5.11: wide schema Excel 匯出。
+
+design.md §5 /analytics/export AC：
+- Summary sheet：per-metric column
+- TimeRange sheet：每 bucket per-metric column
+- Sources sheet（改名自 Categories）：per-source breakdown
+"""
 from __future__ import annotations
 
 import io
@@ -22,54 +29,97 @@ def build_excel_response(
     export_date: date | None = None,
 ) -> StreamingResponse:
     """
-    將分析資料打包成 Excel 檔（三個 sheet），
+    T5.11: 將 wide schema 分析資料打包成 Excel 檔（三個 sheet）。
+    - Summary sheet：per-metric column（avg/min/max/std/anomaly_count）
+    - TimeRange sheet：每 bucket 含 per-metric column
+    - Sources sheet（原 Categories）：per-metric breakdown（metric/count/avg/min/max/anomaly_count）
     回傳 StreamingResponse 附帶 Content-Disposition attachment。
     """
     filename = _make_filename(export_date)
 
-    # 建立 Summary sheet
-    summary_data = {
-        "total_records": [summary.total_records],
-        "anomaly_count": [summary.anomaly_count],
-        "avg_value": [summary.avg_value],
-        "min_value": [summary.min_value],
-        "max_value": [summary.max_value],
-        "categories": [", ".join(summary.categories)],
-    }
-    df_summary = pd.DataFrame(summary_data)
+    # ── Summary sheet（per-metric column）────────────────────────────────────
+    summary_rows = [
+        {
+            "指標": "total",
+            "count": summary.total,
+            "anomaly_count": summary.anomaly_count,
+            "anomaly_rate": round(summary.anomaly_rate, 6),
+            "avg": "",
+            "min": "",
+            "max": "",
+            "std": "",
+        }
+    ]
+    for metric_name, stat in summary.per_metric.items():
+        summary_rows.append({
+            "指標": metric_name,
+            "count": "",
+            "anomaly_count": stat.anomaly_count,
+            "anomaly_rate": "",
+            "avg": round(stat.avg, 4),
+            "min": round(stat.min, 4),
+            "max": round(stat.max, 4),
+            "std": round(stat.std, 4),
+        })
+    df_summary = pd.DataFrame(summary_rows)
 
-    # 建立 TimeRange sheet
+    # ── TimeRange sheet（每 bucket per-metric column）────────────────────────
+    _METRICS = ("temperature", "humidity", "pressure", "voltage", "cpu_usage")
     if timerange.buckets:
-        df_timerange = pd.DataFrame(
-            [
-                {
-                    "ts": b.ts.isoformat(),
-                    "count": b.count,
-                    "avg_value": b.avg_value,
-                    "anomaly_count": b.anomaly_count,
-                }
-                for b in timerange.buckets
-            ]
-        )
+        timerange_rows = []
+        for b in timerange.buckets:
+            row: dict = {
+                "ts": b.ts.isoformat(),
+                "count": b.count,
+                "anomaly_count": b.anomaly_count,
+            }
+            for metric in _METRICS:
+                pm = b.per_metric.get(metric)
+                if pm:
+                    row[f"{metric}_avg"] = round(pm.avg, 4) if pm.avg is not None else None
+                    row[f"{metric}_min"] = round(pm.min, 4) if pm.min is not None else None
+                    row[f"{metric}_max"] = round(pm.max, 4) if pm.max is not None else None
+                    row[f"{metric}_count"] = pm.count
+                    row[f"{metric}_anomaly"] = pm.anomaly_count
+                else:
+                    row[f"{metric}_avg"] = None
+                    row[f"{metric}_min"] = None
+                    row[f"{metric}_max"] = None
+                    row[f"{metric}_count"] = 0
+                    row[f"{metric}_anomaly"] = 0
+            timerange_rows.append(row)
+        df_timerange = pd.DataFrame(timerange_rows)
     else:
-        df_timerange = pd.DataFrame(columns=["ts", "count", "avg_value", "anomaly_count"])
+        # 空 DataFrame 含完整欄位
+        cols = ["ts", "count", "anomaly_count"]
+        for metric in _METRICS:
+            cols += [
+                f"{metric}_avg",
+                f"{metric}_min",
+                f"{metric}_max",
+                f"{metric}_count",
+                f"{metric}_anomaly",
+            ]
+        df_timerange = pd.DataFrame(columns=cols)
 
-    # 建立 Categories sheet
-    if categories.categories:
-        df_categories = pd.DataFrame(
+    # ── Sources sheet（改名自 Categories，per-metric breakdown）───────────────
+    if categories.metrics:
+        df_sources = pd.DataFrame(
             [
                 {
-                    "category": c.category,
-                    "count": c.count,
-                    "avg_value": c.avg_value,
-                    "anomaly_count": c.anomaly_count,
+                    "metric": m.metric,
+                    "count": m.count,
+                    "avg": round(m.avg, 4),
+                    "min": round(m.min, 4),
+                    "max": round(m.max, 4),
+                    "anomaly_count": m.anomaly_count,
                 }
-                for c in categories.categories
+                for m in categories.metrics
             ]
         )
     else:
-        df_categories = pd.DataFrame(
-            columns=["category", "count", "avg_value", "anomaly_count"]
+        df_sources = pd.DataFrame(
+            columns=["metric", "count", "avg", "min", "max", "anomaly_count"]
         )
 
     # 用 openpyxl 引擎寫入 BytesIO
@@ -77,7 +127,7 @@ def build_excel_response(
     with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
         df_summary.to_excel(writer, sheet_name="Summary", index=False)
         df_timerange.to_excel(writer, sheet_name="TimeRange", index=False)
-        df_categories.to_excel(writer, sheet_name="Categories", index=False)
+        df_sources.to_excel(writer, sheet_name="Sources", index=False)
 
     buffer.seek(0)
 

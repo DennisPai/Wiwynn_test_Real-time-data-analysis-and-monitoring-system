@@ -57,6 +57,11 @@ class APIClient:
     base_url 從環境變數 BACKEND_URL 讀取（預設 http://localhost:8000）。
     所有請求自動帶 Authorization: Bearer <token>（若 session_state 有 token）。
     收到 401 時自動登出並 st.rerun()。
+
+    T7.6 wide schema 新增方法：
+      - list_data: 移除 category，新增 sources / metric / min_value / max_value
+      - patch_admin_settings: PATCH /admin/settings anomaly threshold
+      - get_anomaly_preview: GET /anomaly-preview per-metric flags
     """
 
     def __init__(self) -> None:
@@ -137,6 +142,71 @@ class APIClient:
             resp = client.delete(url, headers=headers)
         _handle_401(resp)
         return resp
+
+    # ── T7.6: Wide schema 新增 / 更新方法 ─────────────────────────────────────
+
+    def list_data(
+        self,
+        page: int = 1,
+        size: int = 20,
+        sources: list[str] | None = None,
+        metric: str | None = None,
+        min_value: float | None = None,
+        max_value: float | None = None,
+        owner_id: int | None = None,
+        date_from: str | None = None,
+        date_to: str | None = None,
+        sort_by: str = "ts",
+        sort_order: str = "desc",
+    ) -> httpx.Response:
+        """
+        GET /data — wide schema params（T7.6 AC）。
+        移除 category；新增 sources（list）、metric、min_value、max_value。
+        sources 為 list 時 httpx 自動展開為多個 sources= query param。
+        """
+        params: dict[str, Any] = {
+            "page": page,
+            "size": size,
+            "sort_by": sort_by,
+            "sort_order": sort_order,
+        }
+        if sources:
+            # httpx 支援 list value → ?sources=user&sources=simulator
+            params["sources"] = sources
+        if metric is not None:
+            params["metric"] = metric
+        if min_value is not None:
+            params["min_value"] = min_value
+        if max_value is not None:
+            params["max_value"] = max_value
+        if owner_id is not None:
+            params["owner_id"] = owner_id
+        if date_from is not None:
+            params["date_from"] = date_from
+        if date_to is not None:
+            params["date_to"] = date_to
+        return self.get("/data", params=params)
+
+    def patch_admin_settings(self, threshold_dict: dict[str, dict]) -> httpx.Response:
+        """
+        PATCH /admin/settings — anomaly threshold 批次更新（T7.6 AC）。
+        threshold_dict 格式：{metric_name: {"high": float, "low": float}, ...}
+        BE 接收格式：{anomaly_threshold: {temperature: {high, low}, ...}}
+        """
+        body = {"anomaly_threshold": threshold_dict}
+        return self.patch("/admin/settings", json=body)
+
+    def get_anomaly_preview(self, metric_dict: dict[str, float | None]) -> httpx.Response:
+        """
+        GET /anomaly-preview — FE inline edit 預設 anomaly_flags（T7.6 AC）。
+        metric_dict 格式：{"temperature": 82.0, "humidity": None, ...}
+        response: {"anomaly_flags": {"temperature": true, ...}}
+        """
+        params: dict[str, Any] = {}
+        for metric_name, value in metric_dict.items():
+            if value is not None:
+                params[metric_name] = value
+        return self.get("/anomaly-preview", params=params)
 
 
 # 模組層級單例（Streamlit re-run 不保留，每次 re-run 都重建，符合 httpx.Client 短連線設計）

@@ -18,14 +18,18 @@ from app.models.realtime_metric import RealtimeMetric
 from app.models.realtime_metric_wide import RealtimeMetricWide
 from app.models.user import User
 from app.schemas.admin import (
+    AnomalyThresholdResponse,
+    AnomalyThresholdUpdate,
     AppSettingResponse,
     AppSettingUpdate,
     AuditLogResponse,
     DBStatusResponse,
+    MetricThreshold,
     PoolInfo,
     RealtimeMetricResponse,
     TableInfo,
 )
+from app.services.anomaly_detector import AnomalyDetector
 from app.schemas.realtime import RealtimeSnapshotResponse
 from app.schemas.user import PaginatedResponse
 from app.services.audit_log_service import write_audit_log
@@ -163,6 +167,78 @@ async def realtime_history(
         page=page,
         size=size,
         pages=pages,
+    )
+
+
+@router.patch("/settings", response_model=AnomalyThresholdResponse)
+async def patch_anomaly_threshold(
+    body: AnomalyThresholdUpdate,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, AdminOnly],
+) -> AnomalyThresholdResponse:
+    """
+    T5.9: 更新 anomaly threshold（admin 限定）。
+    body: {anomaly_threshold: {temperature: {high, low}, humidity: {...}, ...}}
+    寫入 DB AppSetting 表（5 key × 1 row each，UPSERT pattern）。
+    寫入後主動呼叫 AnomalyDetector.invalidate_cache()。
+    """
+    import json as _json
+
+    _VALID_METRICS = {"temperature", "humidity", "pressure", "voltage", "cpu_usage"}
+
+    # 驗證 metric 名稱
+    for metric_name in body.anomaly_threshold:
+        if metric_name not in _VALID_METRICS:
+            from fastapi import HTTPException as _HTTPException
+            raise _HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"不合法的 metric 名稱：{metric_name}，合法值：{sorted(_VALID_METRICS)}",
+            )
+
+    updated_keys: list[str] = []
+    updated_threshold: dict[str, MetricThreshold] = {}
+
+    for metric_name, threshold in body.anomaly_threshold.items():
+        db_key = f"anomaly_threshold.{metric_name}"
+        value_json = _json.dumps({"high": threshold.high, "low": threshold.low})
+
+        # UPSERT：查詢 → 若存在則更新，否則新建
+        existing_result = await db.execute(
+            select(AppSetting).where(AppSetting.key == db_key)
+        )
+        existing = existing_result.scalar_one_or_none()
+
+        if existing is not None:
+            existing.value = value_json
+        else:
+            new_setting = AppSetting(
+                key=db_key,
+                value=value_json,
+                description=f"Anomaly threshold for {metric_name}",
+            )
+            db.add(new_setting)
+
+        updated_keys.append(db_key)
+        updated_threshold[metric_name] = threshold
+
+    await db.flush()
+
+    # 寫入 audit_log
+    await write_audit_log(
+        db,
+        action="patch_anomaly_threshold",
+        user_id=current_user.id,
+        target_type="app_setting",
+        target_id="anomaly_threshold",
+        meta={"updated_metrics": list(updated_threshold.keys())},
+    )
+
+    # 主動 invalidate anomaly_detector cache（T5.9 AC 強制）
+    AnomalyDetector.invalidate_cache()
+
+    return AnomalyThresholdResponse(
+        updated_keys=updated_keys,
+        anomaly_threshold=updated_threshold,
     )
 
 
