@@ -292,6 +292,14 @@ if items:
     col_config = _make_column_config(is_admin, is_viewer)
     disabled_cols = _get_disabled_cols(is_admin, is_viewer, df_show)
 
+    # Bug 1 fix: BE 回傳 ts/created_at/updated_at 為 ISO string，
+    # DatetimeColumn 需要 underlying type 為 datetime，先轉換避免 StreamlitAPIException。
+    if "ts" in df_show.columns:
+        df_show["ts"] = pd.to_datetime(df_show["ts"], errors="coerce", utc=True)
+    for _ts_col in ("created_at", "updated_at"):
+        if _ts_col in df_show.columns:
+            df_show[_ts_col] = pd.to_datetime(df_show[_ts_col], errors="coerce", utc=True)
+
     edited_df = st.data_editor(
         df_show,
         use_container_width=True,

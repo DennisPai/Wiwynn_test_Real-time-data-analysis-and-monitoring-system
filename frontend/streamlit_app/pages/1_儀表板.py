@@ -105,12 +105,13 @@ st.markdown("---")
 # ── D2-5: Metric cards 改打 /analytics/unified-summary ────────────────────────
 @st.cache_data(ttl=30)
 def _fetch_unified_summary() -> dict:
-    """從 /analytics/unified-summary 取得統一摘要統計。"""
+    """從 /analytics/unified-summary 取得統一摘要統計。
+    Phase 11 Fix 3: source 改為 sources list[str]，不傳 sources = 全部（等同 both）。
+    """
     now_utc = datetime.now(tz=timezone.utc)
     params = {
         "date_from": (now_utc - timedelta(days=30)).isoformat(),
         "date_to": now_utc.isoformat(),
-        "source": "both",
     }
     resp = client.get("/analytics/unified-summary", params=params)
     if resp.status_code == 200:
@@ -120,12 +121,13 @@ def _fetch_unified_summary() -> dict:
 
 @st.cache_data(ttl=300)
 def _fetch_unified_summary_yesterday() -> dict:
-    """從 /analytics/unified-summary 取得昨日統一摘要統計（TTL 5 分鐘）。"""
+    """從 /analytics/unified-summary 取得昨日統一摘要統計（TTL 5 分鐘）。
+    Phase 11 Fix 3: 不傳 sources = 全部（等同 both）。
+    """
     now_utc = datetime.now(tz=timezone.utc)
     params = {
         "date_from": (now_utc - timedelta(days=2)).isoformat(),
         "date_to": (now_utc - timedelta(days=1)).isoformat(),
-        "source": "both",
     }
     resp = client.get("/analytics/unified-summary", params=params)
     if resp.status_code == 200:
@@ -168,18 +170,21 @@ except Exception:
     unified_yesterday = {}
 
 # 顯示 metric cards（Story #9：品質指標化）
-combined = unified.get("combined", {})
-realtime_info = unified.get("realtime", {})
-records_info = unified.get("records", {})
+# Phase 11 Fix 3: response shape = {user, simulator_data_records, realtime, total, anomaly_count}
+# 「combined」已不存在，改從頂層 total / anomaly_count 取整體統計
+# 「realtime」子dict 欄位為 count（非 total），需做 key mapping
+# 「simulator_data_records」對應即時資料筆數；「user」對應錄入資料筆數
+_total = (unified.get("total") or 0)
+_anomaly = (unified.get("anomaly_count") or 0)
 
-# ── 品質計算邏輯 ────────────────────────────────────────────────────────────
-_total = combined.get("total", 0) or 0
-_anomaly = combined.get("anomaly_count", 0) or 0
+# 即時資料（simulator_data_records）
+realtime_info = unified.get("realtime") or unified.get("simulator_data_records") or {}
+# 錄入資料（user 角色上傳的記錄）
+records_info = unified.get("user") or {}
 
 # 昨日異常率計算（用於 col1 delta vs 昨日）
-_yesterday_combined = unified_yesterday.get("combined", {}) if unified_yesterday else {}
-_yesterday_total = _yesterday_combined.get("total", 0) or 0
-_yesterday_anomaly = _yesterday_combined.get("anomaly_count", 0) or 0
+_yesterday_total = (unified_yesterday.get("total") or 0) if unified_yesterday else 0
+_yesterday_anomaly = (unified_yesterday.get("anomaly_count") or 0) if unified_yesterday else 0
 
 # 除零保護：total == 0 → 健康度 / 異常率顯示載入中狀態
 if unified and _total > 0:
@@ -212,7 +217,7 @@ elif not unified:
     _health_delta_color = "off"
     _anomaly_rate_display = "---"
 else:
-    # combined.total == 0 → 除零保護，顯示載入中
+    # total == 0 → 除零保護，顯示載入中
     _health_label = "— 載入中"
     _health_delta = None
     _health_delta_color = "off"
@@ -236,17 +241,19 @@ col2.metric(
     help="異常筆數 / 合計筆數 × 100%，含即時 + 錄入兩來源",
 )
 
-# col3：即時資料筆數（保留）
+# col3：即時資料筆數（simulator_data_records.count 或 realtime.count）
+_realtime_count = realtime_info.get("count", realtime_info.get("total", "---")) if unified else "---"
 col3.metric(
     label="即時資料筆數",
-    value=realtime_info.get("total", "---") if unified else "---",
+    value=_realtime_count,
     help="過去 30 天 simulator 每秒推送的即時資料總筆數",
 )
 
-# col4：錄入資料筆數（保留）
+# col4：錄入資料筆數（user.count）
+_records_count = records_info.get("count", records_info.get("total", "---")) if unified else "---"
 col4.metric(
     label="錄入資料筆數",
-    value=records_info.get("total", "---") if unified else "---",
+    value=_records_count,
     help="使用者透過 CSV / JSON / inline 編輯錄入的歷史資料筆數",
 )
 
