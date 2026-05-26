@@ -12,6 +12,19 @@
 | 資料分析 | 統計（總計 / 平均 / 最大 / 最小）/ 時間範圍查詢（小時 / 日 bucket）/ 分類聚合 / Excel 匯出 |
 | 系統管理（Admin）| 使用者列表 / 系統日誌 / DB 連線池狀態 / 即時資料歷史查詢 / 動態調整異常閾值 |
 
+## 資料雙軌設計
+
+本系統設計**兩條獨立但 schema 對齊的資料軌道**，covers 不同 use case：
+
+| 軌道 | 來源 | 寫入頻率 | Schema | 典型 use case |
+|---|---|---|---|---|
+| **即時監控（realtime）** | Simulator/Sensor 自動推送 | 每秒 1 筆 5 metric snapshot | Wide format (`ts + 5 metric + anomaly_flags`) | 監看「現在」的指標狀態 + 即時告警 |
+| **資料管理（data_records）** | 使用者透過 UI 或 CSV/JSON 匯入 | 不固定（補登 / 外部 sensor / 歷史紀錄） | Long format (`title + value + category + recorded_at`) | 整理歷史資料 + 跨期分析 |
+
+**兩軌共用同 5 metric category**（temperature / humidity / pressure / voltage / cpu_usage），所以在「分析報表」頁可以用 **source toggle**（兩者 / 僅即時 / 僅錄入）跨軌比較。
+
+**為什麼 schema 不同？** 純工程權衡：realtime 每秒 1 筆 5 metric 用 wide 省 4 個 row + 查詢快；data_records 是「任意時間任意 1 個 metric 補登」用 long 提供彈性。**兩者本質都是同一個監控系統的指標資料**。
+
 ## 技術棧
 
 | 層 | 技術 |
