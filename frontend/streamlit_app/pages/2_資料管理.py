@@ -48,7 +48,7 @@ with col_user:
         logout()
         st.switch_page("Home.py")
 
-st.caption("**本頁管理的是「資料管理軌」**（使用者手動補登或匯入的歷史 / 外部監控資料），與「即時監控軌」（simulator 自動推送）共用同 5 metric category，可在「分析報表」頁切 source toggle 跨軌分析。功能：上傳 CSV / JSON 批量匯入、用篩選條件搜尋、inline 編輯後一次儲存。Viewer 角色為唯讀，User 只能編輯自己的資料，Admin 可編輯所有資料。")
+st.caption("您可以在這裡管理資料：上傳 CSV / JSON 批量匯入、用篩選條件搜尋已有資料、inline 編輯欄位後一次儲存。Viewer 角色為唯讀，User 只能編輯自己的資料，Admin 可編輯所有資料。")
 
 st.markdown("---")
 

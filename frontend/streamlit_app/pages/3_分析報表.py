@@ -90,13 +90,7 @@ def _build_date_params() -> dict[str, str]:
 st.subheader("統合摘要統計")
 
 _SOURCE_OPTIONS = {"兩者（即時+錄入）": "both", "僅即時資料": "realtime", "僅錄入資料": "records"}
-source_label = st.selectbox(
-    "資料來源",
-    list(_SOURCE_OPTIONS.keys()),
-    index=0,
-    key="summary_source",
-    help="兩者 = 即時 + 錄入合併統計；僅即時 = simulator 自動推送的軌道；僅錄入 = 使用者手動匯入的軌道。共用同 5 metric category 可跨軌比較。",
-)
+source_label = st.selectbox("資料來源", list(_SOURCE_OPTIONS.keys()), index=0, key="summary_source")
 source_val = _SOURCE_OPTIONS[source_label]
 
 
@@ -163,13 +157,7 @@ _TREND_SOURCE_OPTIONS = {
     "錄入資料（data_records）": "records",
     "即時資料（realtime）": "realtime",
 }
-trend_source_label = st.selectbox(
-    "趨勢圖資料來源",
-    list(_TREND_SOURCE_OPTIONS.keys()),
-    index=0,
-    key="trend_source",
-    help="即時軌（realtime）= simulator 每秒自動推送的 wide-format 快照，顯示過去 60 分鐘；錄入軌（data_records）= 使用者手動匯入的 long-format 歷史資料，支援 30 天跨期趨勢。共用同 5 metric category 可跨軌比較。",
-)
+trend_source_label = st.selectbox("趨勢圖資料來源", list(_TREND_SOURCE_OPTIONS.keys()), index=0, key="trend_source")
 trend_source = _TREND_SOURCE_OPTIONS[trend_source_label]
 
 
@@ -406,13 +394,7 @@ _CAT_SOURCE_OPTIONS = {
     "錄入資料（data_records）": "records",
     "即時資料（realtime）": "realtime",
 }
-cat_source_label = st.selectbox(
-    "分佈資料來源",
-    list(_CAT_SOURCE_OPTIONS.keys()),
-    index=0,
-    key="cat_source",
-    help="即時軌（realtime）= simulator 自動推送的各 metric 分佈統計；錄入軌（data_records）= 使用者手動匯入的各 category 分佈統計。兩軌共用同 5 metric category，切換可比較兩軌資料分佈差異。",
-)
+cat_source_label = st.selectbox("分佈資料來源", list(_CAT_SOURCE_OPTIONS.keys()), index=0, key="cat_source")
 cat_source = _CAT_SOURCE_OPTIONS[cat_source_label]
 
 
