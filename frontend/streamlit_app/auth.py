@@ -134,3 +134,34 @@ def render_role_matrix(role: str) -> None:
 | 存取系統管理 | {_c("admin", "✓")} | {_c("user", "✗")} | {_c("viewer", "✗")} |
 | 管理使用者角色 | {_c("admin", "✓")} | {_c("user", "✗")} | {_c("viewer", "✗")} |
 """)
+
+
+def render_demo_banner(role: str) -> None:
+    """
+    依角色顯示 st.info 建議 demo 動線。
+    可勾選「不再顯示」存 session_state[f"hide_banner_{role}"]。
+
+    Story #7：角色 Demo Banner 與建議動線引導。
+    VA-22：使用 st.info() 而非 modal，避免被誤解為強迫導覽。
+    VA-23：加「不再顯示」checkbox，Admin 反覆看不耐煩時可關閉。
+    """
+    if st.session_state.get(f"hide_banner_{role}", False):
+        return
+
+    routes = {
+        "viewer": "儀表板 → 即時監控 → 分析報表",
+        "user": "儀表板 → 資料管理（上傳 CSV）→ 分析報表 → 即時監控",
+        "admin": "儀表板 → 即時監控（試觸發異常）→ 系統管理（改閾值 / 看 Audit log）→ 分析報表（匯出 Excel）",
+    }
+    role_zh = {
+        "admin": "Admin（系統管理員）",
+        "user": "User（一般使用者）",
+        "viewer": "Viewer（一般訪客）",
+    }
+    msg = routes.get(role, "儀表板 → 即時監控")
+    role_label = role_zh.get(role, role)
+    st.info(f"**建議 {role_label} demo 動線：** {msg}")
+    # 不再顯示 checkbox（session 級，VA-23）
+    if st.checkbox("不再顯示此提示（本次 session）", key=f"hide_banner_check_{role}"):
+        st.session_state[f"hide_banner_{role}"] = True
+        st.rerun()

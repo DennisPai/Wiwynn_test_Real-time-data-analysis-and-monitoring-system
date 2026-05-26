@@ -9,7 +9,7 @@ import pandas as pd
 import streamlit as st
 
 from api_client import APIClient
-from auth import current_role, current_user, logout, render_role_matrix, require_auth
+from auth import current_role, current_user, logout, render_demo_banner, render_role_matrix, require_auth
 
 st.set_page_config(
     page_title="儀表板 — 即時資料分析與監控系統",
@@ -45,6 +45,8 @@ st.markdown("---")
 # ── B.2.1 角色權限矩陣固定卡片（Story #2）────────────────────────────────────────
 with st.container(border=True):
     render_role_matrix(role)
+# Story #7：角色 Demo Banner 建議動線（緊接矩陣卡片之後）
+render_demo_banner(role)
 
 # ── D2-4 System status header ─────────────────────────────────────────────────
 @st.cache_data(ttl=10)
@@ -157,7 +159,9 @@ col3.metric("錄入資料筆數", records_info.get("total", "—"))
 col4.metric(
     "異常筆數（合計）",
     combined.get("anomaly_count", "—"),
-    delta_color="inverse",
+    # Story #8a: delta_color normal — 異常數升高應顯示紅色（normal: +N = red 符合語意）
+    # 此欄無 delta 值，故 delta_color 設定無視覺差；但改 normal 確保語意一致，避免未來加 delta 時出錯
+    delta_color="normal",
 )
 
 st.markdown("---")

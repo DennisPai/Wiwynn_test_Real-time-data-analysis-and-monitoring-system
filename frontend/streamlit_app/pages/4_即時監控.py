@@ -10,16 +10,20 @@
 """
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timezone
 
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
+from plotly.subplots import make_subplots
 from streamlit_autorefresh import st_autorefresh
 
 from api_client import APIClient
 from auth import current_role, current_user, logout, require_auth
 from ws_client import run_ws_in_background
+
+logger = logging.getLogger(__name__)
 
 st.set_page_config(
     page_title="即時監控 — 即時資料分析與監控系統",
@@ -45,6 +49,16 @@ _METRIC_ZH = {
     "voltage": "電壓(V)",
     "cpu_usage": "CPU(%)",
 }
+
+# Story #10 告警卡片用的完整中文名稱（可讀性更佳）
+METRIC_DISPLAY_NAMES = {
+    "temperature": "溫度",
+    "humidity": "濕度",
+    "pressure": "氣壓",
+    "voltage": "電壓",
+    "cpu_usage": "CPU 使用率",
+}
+
 _METRIC_COLORS = {
     "temperature": "royalblue",
     "humidity": "green",
@@ -69,6 +83,30 @@ _METRIC_LOW_THRESHOLD = {
 }
 
 
+# Story #5：動態閾值 fetch（VA-9 BLOCKER 已驗：viewer/user 打 /admin/settings 得 403）
+@st.cache_data(ttl=30)
+def fetch_dynamic_thresholds(role: str) -> tuple[dict, dict, bool]:
+    """
+    取得動態閾值。回傳 (high_dict, low_dict, is_dynamic)。
+    VA-9 結論：viewer/user 直接走 fallback hardcode，不打 endpoint。
+    admin 嘗試 GET /admin/settings 拿 anomaly_threshold_high/low（全 metric 共用）。
+    """
+    if role != "admin":
+        return _METRIC_HIGH_THRESHOLD, _METRIC_LOW_THRESHOLD, False
+    try:
+        resp = client.get("/admin/settings")
+        if resp.status_code == 200:
+            settings = {s["key"]: s["value"] for s in resp.json()}
+            high_val = float(settings.get("anomaly_threshold_high", 100.0))
+            low_val = float(settings.get("anomaly_threshold_low", 10.0))
+            high = {k: high_val for k in _METRIC_KEYS}
+            low = {k: low_val for k in _METRIC_KEYS}
+            return high, low, True
+    except Exception:
+        pass
+    return _METRIC_HIGH_THRESHOLD, _METRIC_LOW_THRESHOLD, False
+
+
 def format_ts(iso_str: str | None) -> str:
     """將後端 UTC ISO8601 字串轉換為台北時間並格式化。"""
     if not iso_str:
@@ -78,6 +116,39 @@ def format_ts(iso_str: str | None) -> str:
         return dt.strftime("%Y-%m-%d %H:%M:%S")
     except Exception:
         return str(iso_str)
+
+
+def _mock_anomaly_snapshot() -> dict:
+    """
+    構造對齊 backend RealtimeSnapshotResponse v2 schema 的 fake snapshot。
+
+    Schema 規則（spike VA-8 已驗 BLOCKER 通過）：
+    - schema_version 必為 "v2"（ws_client.py:122 驗）
+    - ts 必為 naïve ISO8601（對齊 BE 實際格式，無 Z 後綴）
+      BE 實際 serialize 出 "2026-05-26T07:52:26"（tz naive）
+      FE pandas format="ISO8601" 兩種都吃，mock 用 naïve 最大化一致
+    - 5 metric 必填 float（非 None，避免 plotly NaN）
+    - anomaly_flags 全列 5 keys，至少 2 個 True
+    - source = "mock"（區分 simulator vs mock，便於 audit）
+    """
+    now = datetime.now(tz=timezone.utc)
+    return {
+        "schema_version": "v2",
+        "ts": now.replace(tzinfo=None).isoformat(timespec="seconds"),
+        "temperature": 150.0,    # > 100 high threshold → anomaly
+        "humidity": 50.0,         # normal
+        "pressure": 1013.25,      # normal
+        "voltage": 12.0,          # normal
+        "cpu_usage": 95.0,        # > 90 high threshold → anomaly
+        "anomaly_flags": {
+            "temperature": True,
+            "humidity": False,
+            "pressure": False,
+            "voltage": False,
+            "cpu_usage": True,
+        },
+        "source": "mock",
+    }
 
 
 # ── 右上角：使用者資訊 + 登出 ─────────────────────────────────────────────────
@@ -145,13 +216,36 @@ with status_col3:
     else:
         st.success("活躍告警：無")
 
+# ── Story #4: Demo 控制面板（FE-only mock anomaly 注入）────────────────────────
+with st.container(border=True):
+    st.markdown("**Demo 控制**")
+    st.caption(
+        "為加速 demo 體驗，您可以手動觸發一次模擬異常，立即看到告警卡 / 紅色 marker / 淡粉紅 row 三層視覺效果。"
+        "（FE 模擬模式：不打 BE，直接在 buffer 插入 1 筆對齊 RealtimeSnapshotResponse v2 schema 的假 snapshot）"
+    )
+    if st.button("觸發一次模擬異常", key="trigger_mock_anomaly", type="primary"):
+        fake = _mock_anomaly_snapshot()
+        ws_client.push_tick(fake)
+        st.toast("已注入 mock anomaly，1 秒後 autorefresh 顯示", icon="✓")
+        st.rerun()
+
+# ── Story #5: 取動態閾值（admin 才打 endpoint，viewer/user 直接 fallback）──────
+_dyn_high, _dyn_low, _is_dynamic = fetch_dynamic_thresholds(role)
+if role == "admin":
+    if _is_dynamic:
+        st.caption(f"閾值來源：動態（high={list(_dyn_high.values())[0]}, low={list(_dyn_low.values())[0]}，30 秒 TTL cache）")
+    else:
+        st.caption("閾值來源：預設 fallback（無法取得動態設定）")
+else:
+    st.caption("閾值來源：預設值（僅 Admin 可在系統管理頁調整）")
+
 # ── D5-10: 移除類別 selectbox，改「顯示哪些線」multiselect ──────────────────────
-ctrl_col1, ctrl_col2 = st.columns([2, 2])
+ctrl_col1, ctrl_col2, ctrl_col3 = st.columns([2, 2, 2])
 with ctrl_col1:
     selected_metrics = st.multiselect(
         "顯示哪些線",
         options=_METRIC_KEYS,
-        default=_METRIC_KEYS,
+        default=["temperature", "pressure", "cpu_usage"],
         format_func=lambda m: _METRIC_ZH.get(m, m),
         key="rt_metrics_select",
     )
@@ -160,10 +254,14 @@ with ctrl_col2:
         ws_client.clear()
         st.session_state.pop("rt_history_loaded", None)
         st.rerun()
+with ctrl_col3:
+    if st.button("重新整理閾值", key="refresh_thresholds", help="清除 30 秒 cache 立即重抓 /admin/settings（僅 admin 有用）"):
+        st.cache_data.clear()
+        st.rerun()
 
 st.markdown("---")
 
-# ── D5-6: 告警卡（最近 5 筆 snapshot 有異常 + delta 數值）Q4 ──────────────────────
+# ── D5-6 + Story #10: 告警卡（最近 5 筆 snapshot 有異常 + delta 數值）Q4 ────────
 # 去重：每個 metric 只取最新一筆
 seen_metrics: set[str] = set()
 dedup_alert_metrics: list[tuple[str, float, dict]] = []
@@ -183,26 +281,38 @@ if dedup_alert_metrics:
         if snap.get("anomaly_flags", {}).get(mk, False)
     ])
     st.error(f"告警：偵測到異常（最近 5 筆快照共 {len(dedup_alert_metrics)} 個 metric 異常）")
-    alert_cols = st.columns(min(len(dedup_alert_metrics), 5))
-    for i, (metric_key, value, snap) in enumerate(dedup_alert_metrics[:5]):
-        high_thr = _METRIC_HIGH_THRESHOLD.get(metric_key, 100.0)
-        low_thr = _METRIC_LOW_THRESHOLD.get(metric_key, 0.0)
+    n_alerts = len(dedup_alert_metrics)
+    # Story #10: 每行最多 3 個卡片（AC-2）
+    alert_cols = st.columns(min(n_alerts, 3))
+    for i, (metric_key, value, snap) in enumerate(dedup_alert_metrics):
+        # Story #5: 用動態閾值（admin 取自 /admin/settings；其他 fallback hardcode）
+        high_thr = _dyn_high.get(metric_key, 100.0)
+        low_thr = _dyn_low.get(metric_key, 0.0)
         threshold = high_thr if value > high_thr else low_thr
         delta_val = value - threshold
         sign = "+" if delta_val > 0 else ""
-        with alert_cols[i]:
+        # Story #10: 使用完整中文 metric 名稱（METRIC_DISPLAY_NAMES）
+        display_name = METRIC_DISPLAY_NAMES.get(metric_key, _METRIC_ZH.get(metric_key, metric_key))
+        # Story #10: 超閾值/低閾值 delta 文字
+        if value > high_thr:
+            delta_text = f"超閾值 {sign}{delta_val:.2f}（>{high_thr}）"
+        else:
+            delta_text = f"低閾值 {sign}{delta_val:.2f}（<{low_thr}）"
+        col_idx = i % 3
+        with alert_cols[col_idx]:
+            # Story #8 (a): delta_color="normal"（+異常 = 紅色，符合直覺）
             st.metric(
-                label=f"{_METRIC_ZH.get(metric_key, metric_key)} 異常",
+                label=f"{display_name} 異常",
                 value=f"{value:.2f}",
-                delta=f"{sign}{delta_val:.2f}（閾值 {threshold}）",
-                delta_color="inverse",
+                delta=delta_text,
+                delta_color="normal",
             )
 else:
     st.success("目前無異常告警")
 
 st.markdown("---")
 
-# ── D5-7: 折線圖改 5 條線 + 異常點 circle-open red marker ─────────────────────
+# ── Story #6: 折線圖 Small Multiples 重構（plotly subplots）──────────────────
 st.subheader("即時資料串流（最新 60 點）")
 
 if all_ticks:
@@ -213,57 +323,83 @@ if all_ticks:
     else:
         df_rt["ts_tw"] = pd.Series(dtype="object")
 
-    fig_rt = go.Figure()
-
-    # 每 metric 一條線 + 異常點 circle-open red marker
+    # Story #6: 用 make_subplots，每 metric 一個獨立 subplot
     metrics_to_show = selected_metrics if selected_metrics else _METRIC_KEYS
-    for metric_key in metrics_to_show:
-        if metric_key not in df_rt.columns:
-            continue
-        df_rt[f"{metric_key}_float"] = pd.to_numeric(df_rt[metric_key], errors="coerce")
+    n_rows = len(metrics_to_show)
 
-        # 正常折線
-        fig_rt.add_trace(go.Scatter(
-            x=df_rt["ts_tw"],
-            y=df_rt[f"{metric_key}_float"],
-            mode="lines",
-            name=_METRIC_ZH.get(metric_key, metric_key),
-            line={"color": _METRIC_COLORS.get(metric_key, "gray"), "width": 2},
-        ))
+    if n_rows > 0:
+        fig_rt = make_subplots(
+            rows=n_rows,
+            cols=1,
+            shared_xaxes=True,
+            vertical_spacing=0.04,
+            subplot_titles=[_METRIC_ZH.get(m, m) for m in metrics_to_show],
+        )
 
-        # 異常點：circle-open red marker
-        if "anomaly_flags" in df_rt.columns:
-            def _is_anom(row: pd.Series, mk: str = metric_key) -> bool:
-                flags = row.get("anomaly_flags", {})
-                if isinstance(flags, dict):
-                    return bool(flags.get(mk, False))
-                return False
-            anom_mask = df_rt.apply(_is_anom, axis=1)
-            anom_df = df_rt[anom_mask]
-            if not anom_df.empty:
-                fig_rt.add_trace(go.Scatter(
-                    x=anom_df["ts_tw"],
-                    y=anom_df[f"{metric_key}_float"],
-                    mode="markers",
-                    name=f"{_METRIC_ZH.get(metric_key, metric_key)} 異常",
-                    marker={
-                        "color": "red",
-                        "size": 12,
-                        "symbol": "circle-open",
-                        "line": {"width": 2, "color": "red"},
-                    },
-                    showlegend=True,
-                ))
+        for idx, metric_key in enumerate(metrics_to_show, start=1):
+            if metric_key not in df_rt.columns:
+                continue
+            df_rt[f"{metric_key}_float"] = pd.to_numeric(df_rt[metric_key], errors="coerce")
 
-    fig_rt.update_layout(
-        title="即時資料（最新 60 點）",
-        xaxis_title="時間（台北）",
-        yaxis_title="數值",
-        legend={"orientation": "h", "y": -0.2},
-        margin={"l": 40, "r": 20, "t": 50, "b": 80},
-        uirevision="realtime_chart",
-    )
-    st.plotly_chart(fig_rt, use_container_width=True)
+            # 正常折線
+            fig_rt.add_trace(
+                go.Scatter(
+                    x=df_rt["ts_tw"],
+                    y=df_rt[f"{metric_key}_float"],
+                    mode="lines",
+                    name=_METRIC_ZH.get(metric_key, metric_key),
+                    line={"color": _METRIC_COLORS.get(metric_key, "gray"), "width": 2},
+                    showlegend=False,  # subplot title 已顯示
+                ),
+                row=idx, col=1,
+            )
+
+            # 異常點：circle-open red marker（Story #6 AC-2: 在正確 subplot row）
+            if "anomaly_flags" in df_rt.columns:
+                anom_mask = df_rt.apply(
+                    lambda r, mk=metric_key: bool(
+                        r.get("anomaly_flags", {}).get(mk, False)
+                        if isinstance(r.get("anomaly_flags"), dict)
+                        else False
+                    ),
+                    axis=1,
+                )
+                anom_df = df_rt[anom_mask]
+                if not anom_df.empty:
+                    fig_rt.add_trace(
+                        go.Scatter(
+                            x=anom_df["ts_tw"],
+                            y=anom_df[f"{metric_key}_float"],
+                            mode="markers",
+                            marker={
+                                "color": "red",
+                                "size": 12,
+                                "symbol": "circle-open",
+                                "line": {"width": 2, "color": "red"},
+                            },
+                            showlegend=False,
+                        ),
+                        row=idx, col=1,
+                    )
+
+            fig_rt.update_yaxes(
+                title_text=_METRIC_ZH.get(metric_key, metric_key),
+                row=idx, col=1,
+            )
+
+        # Story #6: height = min(180 * n_rows, 900)（A.5 spike 推薦公式）
+        fig_rt.update_layout(
+            height=min(180 * n_rows, 900),
+            margin={"l": 60, "r": 20, "t": 60, "b": 40},
+            uirevision="realtime_chart",  # 防 autorefresh hover 閃爍
+            showlegend=False,
+        )
+        # 只最底 subplot 顯示 x 軸標題
+        fig_rt.update_xaxes(title_text="時間（台北）", row=n_rows, col=1)
+
+        st.plotly_chart(fig_rt, use_container_width=True)
+    else:
+        st.info("請在上方 multiselect 選擇至少一個 metric 顯示。")
 
     # ── D5-8 & D5-9: 表格 60 列 + Pandas Styler 淡粉紅 row + 紅字 cell ──────────
     st.subheader("最新 60 筆資料")
@@ -343,6 +479,7 @@ if all_ticks:
                     styles.append("")
             return styles
 
+        # Story #4 / Story #8 (b): Styler 穩健化 — 失敗 log + warning + fallback
         try:
             styled = df_visible.style.apply(_style_row, axis=1)
             for m_col in metric_display_cols:
@@ -356,8 +493,9 @@ if all_ticks:
                 c: "{:.2f}" for c in metric_display_cols if c in df_visible.columns
             })
             st.dataframe(styled, use_container_width=True, hide_index=True)
-        except Exception:
-            # fallback：無 styler
+        except Exception as exc:
+            logger.warning("即時監控 Styler 渲染失敗：%s", exc, exc_info=True)
+            st.warning("表格樣式載入失敗，資料內容仍正確")
             st.dataframe(df_visible, use_container_width=True, hide_index=True)
 
 else:
