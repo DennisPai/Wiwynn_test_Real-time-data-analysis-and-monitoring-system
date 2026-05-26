@@ -204,6 +204,50 @@ with tab_users:
                 else:
                     st.info("沒有任何變更。")
 
+            # v3 Story #11 AC-3：刪除使用者（DELETE /users/{id}）
+            st.markdown("---")
+            st.subheader("刪除選定使用者")
+
+            _selected_uid = selected_user_item.get("id")
+            _current_uid = user.get("id")
+            _is_self = (_selected_uid == _current_uid)
+
+            if _is_self:
+                st.warning("不可刪除自己的帳號。請選擇其他使用者。")
+                st.button(
+                    "刪除選定使用者",
+                    key="u_delete_btn",
+                    type="secondary",
+                    disabled=True,
+                )
+            else:
+                # 確認 checkbox + 刪除按鈕
+                _confirm_delete = st.checkbox(
+                    f"確認刪除 {selected_user_item.get('email', '')}（不可復原）",
+                    key="u_delete_confirm",
+                )
+                if st.button(
+                    "刪除選定使用者",
+                    key="u_delete_btn",
+                    type="secondary",
+                    disabled=not _confirm_delete,
+                ):
+                    _del_resp = client.delete(f"/users/{_selected_uid}")
+                    if _del_resp.status_code in (200, 204):
+                        st.success(f"已刪除使用者 {selected_user_item.get('email', '')}。")
+                        st.cache_data.clear()
+                        st.rerun()
+                    elif _del_resp.status_code == 404:
+                        st.error("此使用者已被刪除。")
+                        st.cache_data.clear()
+                        st.rerun()
+                    else:
+                        try:
+                            _detail = _del_resp.json().get("detail", "刪除失敗")
+                        except Exception:
+                            _detail = f"刪除失敗（HTTP {_del_resp.status_code}）"
+                        st.error(f"刪除失敗：{_detail}")
+
         st.markdown("---")
 
         # D6-5: 改密碼表單（admin 改任意人，改自己需 old_password）
@@ -270,10 +314,12 @@ with tab_users:
 with tab_logs:
     st.subheader("稽核日誌")
 
+    st.caption("Audit log 預設顯示前 50 筆。若需更早記錄請使用上方日期篩選縮小範圍。")
+
     with st.expander("篩選條件", expanded=True):
         log_col1, log_col2, log_col3 = st.columns(3)
         with log_col1:
-            log_page_size = st.selectbox("每頁筆數", [20, 50, 100], index=0, key="log_size")
+            log_page_size = st.selectbox("每頁筆數", [20, 50, 100], index=1, key="log_size")
             log_page = st.number_input("頁碼", min_value=1, value=1, step=1, key="log_page")
         with log_col2:
             log_user_id = st.text_input("使用者 ID（選填）", placeholder="留空表示全部", key="log_uid")
@@ -561,6 +607,15 @@ with tab_settings:
     st.subheader("系統設定")
     st.caption("修改設定後點擊「儲存」即時生效。設定值存放於資料庫 app_settings 表。")
 
+    # Settings expander toggle（v3 Story #11 AC-2）
+    if "settings_all_expanded" not in st.session_state:
+        st.session_state["settings_all_expanded"] = False
+
+    toggle_label = "收合全部" if st.session_state["settings_all_expanded"] else "展開全部設定"
+    if st.button(toggle_label, key="settings_toggle_expand"):
+        st.session_state["settings_all_expanded"] = not st.session_state["settings_all_expanded"]
+        st.rerun()
+
     @st.cache_data(ttl=30)
     def _fetch_settings() -> list[dict]:
         resp = client.get("/admin/settings")
@@ -582,7 +637,7 @@ with tab_settings:
             description = setting.get("description", "")
             updated_at = format_ts(setting.get("updated_at"))
 
-            with st.expander(f"設定項目：{key}", expanded=True):
+            with st.expander(f"設定項目：{key}", expanded=st.session_state.get("settings_all_expanded", False)):
                 st.caption(description)
                 st.caption(f"最後更新：{updated_at}" if updated_at else "尚未更新")
 

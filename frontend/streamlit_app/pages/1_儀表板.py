@@ -147,21 +147,78 @@ with st.spinner("載入統計資料..."):
         st.error(f"無法取得統計資料：{exc}")
         unified = {}
 
-# 顯示 metric cards
+# 顯示 metric cards（Story #9：品質指標化）
 combined = unified.get("combined", {})
 realtime_info = unified.get("realtime", {})
 records_info = unified.get("records", {})
 
+# ── 品質計算邏輯 ────────────────────────────────────────────────────────────
+_total = combined.get("total", 0) or 0
+_anomaly = combined.get("anomaly_count", 0) or 0
+
+# 除零保護：total == 0 → 健康度 / 異常率顯示載入中狀態
+if unified and _total > 0:
+    # 異常率：anomaly_count / total × 100，取 3 位小數
+    _anomaly_rate = (_anomaly / _total) * 100
+
+    # 健康度判斷：< 1% 健康 / 1-5% 警示 / > 5% 異常
+    if _anomaly_rate < 1.0:
+        _health_label = "● 健康"
+        _health_delta = f"異常率 {_anomaly_rate:.3f}%"
+        _health_delta_color = "inverse"   # inverse: 負值（低異常率）顯綠
+    elif _anomaly_rate <= 5.0:
+        _health_label = "⚠ 警示"
+        _health_delta = f"異常率 {_anomaly_rate:.3f}%"
+        _health_delta_color = "normal"    # normal: 正值顯紅
+    else:
+        _health_label = "✕ 異常"
+        _health_delta = f"異常率 {_anomaly_rate:.3f}%"
+        _health_delta_color = "normal"    # normal: 正值顯紅
+
+    _anomaly_rate_display = f"{_anomaly_rate:.3f}%"
+elif not unified:
+    # fetch 完全失敗 → 4 卡片顯示 ---
+    _health_label = "---"
+    _health_delta = None
+    _health_delta_color = "off"
+    _anomaly_rate_display = "---"
+else:
+    # combined.total == 0 → 除零保護，顯示載入中
+    _health_label = "— 載入中"
+    _health_delta = None
+    _health_delta_color = "off"
+    _anomaly_rate_display = "—"
+
 col1, col2, col3, col4 = st.columns(4)
-col1.metric("合計資料筆數", combined.get("total", "—"))
-col2.metric("即時資料筆數", realtime_info.get("total", "—"))
-col3.metric("錄入資料筆數", records_info.get("total", "—"))
+
+# col1：系統健康度
+col1.metric(
+    label="系統健康度",
+    value=_health_label if unified else "---",
+    delta=_health_delta,
+    delta_color=_health_delta_color,
+    help="基於過去 30 天異常率：< 1% 健康 / 1-5% 警示 / > 5% 異常",
+)
+
+# col2：異常率（過去 30 天）
+col2.metric(
+    label="異常率（過去 30 天）",
+    value=_anomaly_rate_display if unified else "---",
+    help="異常筆數 / 合計筆數 × 100%，含即時 + 錄入兩來源",
+)
+
+# col3：即時資料筆數（保留）
+col3.metric(
+    label="即時資料筆數",
+    value=realtime_info.get("total", "---") if unified else "---",
+    help="過去 30 天 simulator 每秒推送的即時資料總筆數",
+)
+
+# col4：錄入資料筆數（保留）
 col4.metric(
-    "異常筆數（合計）",
-    combined.get("anomaly_count", "—"),
-    # Story #8a: delta_color normal — 異常數升高應顯示紅色（normal: +N = red 符合語意）
-    # 此欄無 delta 值，故 delta_color 設定無視覺差；但改 normal 確保語意一致，避免未來加 delta 時出錯
-    delta_color="normal",
+    label="錄入資料筆數",
+    value=records_info.get("total", "---") if unified else "---",
+    help="使用者透過 CSV / JSON / inline 編輯錄入的歷史資料筆數",
 )
 
 st.markdown("---")
