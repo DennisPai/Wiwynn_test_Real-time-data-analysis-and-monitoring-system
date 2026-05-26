@@ -91,6 +91,33 @@ docker compose ps
 | `/ws/realtime` | WebSocket 即時推送（query string 帶 `token=<JWT>`）|
 | `/health` | 健康檢查（給 docker healthcheck）|
 
+### 常用 endpoint 速查（curl 範例）
+
+```bash
+# Login → 拿 token
+TOKEN=$(curl -s -X POST $BE/api/v1/auth/login \
+  -H 'Content-Type: application/json' \
+  -d '{"email":"admin@example.com","password":"admin123"}' | jq -r .access_token)
+
+# CSV 批量匯入（端點是 bulk-import 不是 import）
+curl -X POST $BE/api/v1/data/bulk-import \
+  -H "Authorization: Bearer $TOKEN" \
+  -F "file=@docs/sample_data.csv"
+
+# Analytics 時間範圍查詢（參數是 date_from / date_to，ISO8601）
+curl "$BE/api/v1/analytics/timerange?date_from=2026-05-01T00:00:00&date_to=2026-05-31T23:59:59" \
+  -H "Authorization: Bearer $TOKEN"
+
+# Admin 動態調整異常閾值（key 名是 anomaly_threshold_high / anomaly_threshold_low，value 必為字串）
+curl -X PATCH $BE/api/v1/admin/settings/anomaly_threshold_high \
+  -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"value":"150.0"}'
+
+# WebSocket 即時推送（token 走 query string）
+# wss://<BE_HOST>/ws/realtime?token=<JWT>
+```
+
 ## 範例資料
 
 匯入流程：登入 → Data 頁面 → 上傳 CSV → 選 `docs/sample_data.csv`（60 筆，5 個 category，跨 7 天，含 9 筆高異常 + 5 筆低異常）。

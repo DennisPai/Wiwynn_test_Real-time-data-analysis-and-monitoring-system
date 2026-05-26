@@ -27,7 +27,7 @@ with tab_login:
     st.subheader("帳號登入")
     with st.form("login_form"):
         email = st.text_input("Email", placeholder="user@example.com")
-        password = st.text_input("密碼", type="password", placeholder="至少 8 個字元")
+        password = st.text_input("密碼", type="password", placeholder="輸入密碼")
         submitted = st.form_submit_button("登入", use_container_width=True)
 
     if submitted:

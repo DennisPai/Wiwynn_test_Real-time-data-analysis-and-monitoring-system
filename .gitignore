@@ -43,3 +43,6 @@ htmlcov/
 *.db
 *.sqlite
 *.sqlite3
+
+# 錯放的 model weights
+yolov8*.pt
