@@ -275,12 +275,12 @@ with tab_logs:
             df_logs_show["時間（台北）"] = df_logs_show["時間（台北）"].apply(format_ts)
         st.dataframe(df_logs_show, use_container_width=True, hide_index=True)
 
-        # metadata 展開
-        if "metadata" in df_logs.columns:
+        # metadata 展開（BE schema 欄位名為 meta）
+        if "meta" in df_logs.columns:
             with st.expander("查看 metadata 詳情"):
                 for item in log_items[:10]:
-                    if item.get("metadata"):
-                        st.json(item["metadata"])
+                    if item.get("meta"):
+                        st.json(item["meta"])
     else:
         st.info("查詢區間內沒有日誌記錄。")
 

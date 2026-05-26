@@ -1,28 +1,26 @@
 """
 Realtime 頁面：即時資料串流 + 異常告警。
 
-策略：以輪詢 /admin/realtime-history 為主（避免 Streamlit 非同步 WS 踩雷）。
-     - 每秒透過 streamlit-autorefresh 觸發 rerun
-     - 呼叫 GET /admin/realtime-history 取最新 60 筆
-     - 用 st.session_state.realtime_buffer（deque maxlen=60）維持滾動視窗
+策略：直接訂閱 BE WebSocket `/ws/realtime`（spec 核心要求）。
+     - run_ws_in_background(token, on_tick) 啟動背景 thread 持續收 tick
+     - WS client 內 deque buffer（maxlen=60）保留滾動視窗
+     - st_autorefresh 每秒 rerun 讀 buffer 並重繪
      - 異常點以紅色 marker 顯示，並在頁面頂部列出最近 5 筆告警
 
-類別 filter（可選）：由使用者在側邊欄選擇，只顯示特定類別。
-
-時間均以 UTC 存入 buffer，顯示時 tz_convert("Asia/Taipei")。
+所有角色（admin/user/viewer）皆可使用，因為 WS auth 走 JWT query token
+而不是 RBAC require_role。
 """
 from __future__ import annotations
 
-from collections import deque
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 from streamlit_autorefresh import st_autorefresh
 
-from api_client import APIClient
 from auth import current_role, current_user, logout, require_auth
+from ws_client import run_ws_in_background
 
 st.set_page_config(
     page_title="Realtime — 即時資料分析與監控系統",
@@ -33,9 +31,11 @@ st.set_page_config(
 # 認證守衛
 require_auth()
 
-client = APIClient()
 user = current_user()
 role = current_role()
+
+# 從 session_state 取得 JWT token（require_auth 已保證存在）
+_token: str = st.session_state.get("token", "")
 
 # ── 時間輔助函式 ───────────────────────────────────────────────────────────────
 
@@ -63,14 +63,14 @@ with col_user:
         logout()
         st.switch_page("Home.py")
 
+# ── 啟動 WebSocket 背景 thread（每個 rerun 都呼叫；run_ws_in_background 內部
+#     用 @st.cache_resource 確保只啟動一次，重複呼叫直接拿到既有 client）─────
+ws_client = run_ws_in_background(_token, on_tick=lambda _tick: None)
+
 # ── 自動刷新（每 1000 ms = 1 秒）────────────────────────────────────────────
-# st_autorefresh 每隔 interval ms 觸發一次 Streamlit rerun
 refresh_count = st_autorefresh(interval=1000, key="realtime_autorefresh")
 
 # ── session_state 初始化 ──────────────────────────────────────────────────────
-if "realtime_buffer" not in st.session_state:
-    st.session_state["realtime_buffer"] = deque(maxlen=60)
-
 if "rt_category_filter" not in st.session_state:
     st.session_state["rt_category_filter"] = "（全部）"
 
@@ -80,14 +80,15 @@ st.markdown("---")
 ctrl_col1, ctrl_col2, ctrl_col3 = st.columns([1, 2, 1])
 
 with ctrl_col1:
-    # 連線狀態指示燈（polling 方式，只要能取到資料就算「連線中」）
-    if st.session_state.get("rt_last_fetch_ok", False):
-        st.success("● 串流中")
+    # WebSocket 連線狀態指示燈
+    if ws_client.is_connected():
+        st.success("● WS 串流中")
     else:
-        st.warning("○ 等待資料...")
+        st.warning("○ WS 連線中...")
 
 with ctrl_col2:
-    _KNOWN_CATEGORIES = ["（全部）", "temperature", "humidity", "pressure", "vibration", "power"]
+    # 類別清單對齊 BE realtime_service.py 的 SIMULATOR_CATEGORIES
+    _KNOWN_CATEGORIES = ["（全部）", "temperature", "humidity", "pressure", "voltage", "cpu_usage"]
     f_category_label = st.selectbox(
         "類別篩選",
         _KNOWN_CATEGORIES,
@@ -99,73 +100,17 @@ with ctrl_col2:
 
 with ctrl_col3:
     if st.button("清空緩衝區", key="clear_buffer"):
-        st.session_state["realtime_buffer"] = deque(maxlen=60)
-        st.session_state["rt_last_fetch_ok"] = False
+        ws_client.clear()
         st.rerun()
 
-# ── 取最新 60 筆 realtime 資料（polling） ─────────────────────────────────────
+# ── 從 WS client 讀 buffer ────────────────────────────────────────────────────
 
-def _fetch_realtime(category: str | None) -> list[dict]:
-    """
-    呼叫 GET /admin/realtime-history，取最近 60 筆。
-    非 admin 角色沒有 /admin/ 權限，改用 WebSocket 模式指示。
-    """
-    now_utc = datetime.now(tz=timezone.utc)
-    # 只取最近 2 分鐘的資料，確保即時性
-    since = now_utc - timedelta(minutes=2)
-
-    params: dict = {
-        "date_from": since.isoformat(),
-        "date_to": now_utc.isoformat(),
-        "page": 1,
-        "size": 60,
-    }
-    if category:
-        params["category"] = category
-
-    try:
-        resp = client.get("/admin/realtime-history", params=params)
-        if resp.status_code == 200:
-            items = resp.json().get("items", [])
-            # 依 ts 升序排列（舊 → 新）
-            items.sort(key=lambda x: x.get("ts", ""))
-            return items
-        elif resp.status_code == 403:
-            # 非 admin：回傳特殊標記
-            return [{"_no_permission": True}]
-    except Exception:
-        pass
-    return []
-
-
-# ── 執行 polling 並更新 buffer ────────────────────────────────────────────────
-
-new_ticks = _fetch_realtime(f_category)
-
-if new_ticks and new_ticks[0].get("_no_permission"):
-    # 非 admin 使用者：顯示提示，無法使用 realtime-history API
-    st.warning(
-        "您的角色（`viewer` 或 `user`）沒有存取 `/admin/realtime-history` 的權限。  \n"
-        "請聯絡管理員或使用 Admin 帳號登入以查看即時資料。"
-    )
-    st.stop()
-
-elif new_ticks:
-    st.session_state["rt_last_fetch_ok"] = True
-    # 只加入尚未在 buffer 中的資料（依 ts 去重）
-    buf: deque = st.session_state["realtime_buffer"]
-    existing_ts = {item.get("ts") for item in buf}
-    for tick in new_ticks:
-        if tick.get("ts") not in existing_ts:
-            buf.append(tick)
-            existing_ts.add(tick.get("ts"))
+all_ticks: list[dict] = ws_client.get_buffer()
+# 套用類別 filter
+if f_category:
+    buf_list = [t for t in all_ticks if t.get("category") == f_category]
 else:
-    # 取不到新資料：保持 buffer 現有內容
-    pass
-
-# ── 讀取 buffer 準備繪圖 ──────────────────────────────────────────────────────
-
-buf_list: list[dict] = list(st.session_state["realtime_buffer"])
+    buf_list = list(all_ticks)
 
 # ── 頂部告警卡：最近 5 筆異常 ─────────────────────────────────────────────────
 

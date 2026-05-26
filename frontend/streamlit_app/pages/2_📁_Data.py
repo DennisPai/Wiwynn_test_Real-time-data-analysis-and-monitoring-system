@@ -123,10 +123,12 @@ if st.session_state.get("show_add_form") and role in ("admin", "user"):
         a_title = st.text_input("標題 *", placeholder="資料標題")
         a_value = st.number_input("數值 *", value=0.0, format="%.4f")
         a_category = st.text_input("類別 *", placeholder="例如：temperature")
-        a_recorded_at = st.datetime_input(
-            "記錄時間 *",
-            value=datetime.now(tz=timezone.utc),
-        )
+        # Streamlit 沒有 st.datetime_input，拆 date_input + time_input 再 combine
+        _now_utc = datetime.now(tz=timezone.utc)
+        col_d, col_t = st.columns(2)
+        a_date = col_d.date_input("記錄日期 *", value=_now_utc.date())
+        a_time = col_t.time_input("記錄時間 *", value=_now_utc.time().replace(microsecond=0))
+        a_recorded_at = datetime.combine(a_date, a_time).replace(tzinfo=timezone.utc)
         a_is_anomaly = st.checkbox("標記為異常")
         col_submit, col_cancel = st.columns(2)
         submitted = col_submit.form_submit_button("儲存", use_container_width=True)

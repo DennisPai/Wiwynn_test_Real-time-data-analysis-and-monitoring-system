@@ -76,7 +76,8 @@ with st.expander("🔍 查詢條件", expanded=True):
 
     with filter_col2:
         # 類別選單：從已知類別或使用者輸入
-        _KNOWN_CATEGORIES = ["（全部）", "temperature", "humidity", "pressure", "vibration", "power"]
+        # 對齊 BE realtime_service.py SIMULATOR_CATEGORIES + CSV sample categories
+        _KNOWN_CATEGORIES = ["（全部）", "temperature", "humidity", "pressure", "voltage", "cpu_usage"]
         f_category_label = st.selectbox("類別篩選", _KNOWN_CATEGORIES, index=0)
         f_category: str | None = None if f_category_label == "（全部）" else f_category_label
 
@@ -139,10 +140,10 @@ with st.spinner("載入摘要統計..."):
 
 if summary:
     m1, m2, m3, m4 = st.columns(4)
-    m1.metric("總筆數", summary.get("count", "—"))
-    m2.metric("合計", f"{summary.get('sum', 0):.2f}" if summary.get("sum") is not None else "—")
-    m3.metric("平均值", f"{summary.get('avg', 0):.2f}" if summary.get("avg") is not None else "—")
-    m4.metric("最大值", f"{summary.get('max', 0):.2f}" if summary.get("max") is not None else "—")
+    m1.metric("總筆數", summary.get("total_records", "—"))
+    m2.metric("平均值", f"{summary.get('avg_value', 0):.2f}" if summary.get("avg_value") is not None else "—")
+    m3.metric("最大值", f"{summary.get('max_value', 0):.2f}" if summary.get("max_value") is not None else "—")
+    m4.metric("最小值", f"{summary.get('min_value', 0):.2f}" if summary.get("min_value") is not None else "—")
 
     anomaly_count = summary.get("anomaly_count", 0)
     if anomaly_count and anomaly_count > 0:
@@ -185,23 +186,24 @@ if buckets:
 
     fig_line = go.Figure()
 
-    # 主折線（avg）
+    # 主折線（avg_value）
     fig_line.add_trace(go.Scatter(
         x=df_time["ts_tw"],
-        y=df_time.get("avg", []),
+        y=df_time.get("avg_value", []),
         mode="lines+markers",
         name="平均值",
         line={"color": "royalblue"},
     ))
 
-    # 合計值（sum）次要折線
-    if "sum" in df_time.columns:
+    # 筆數（count）次要折線
+    if "count" in df_time.columns:
         fig_line.add_trace(go.Scatter(
             x=df_time["ts_tw"],
-            y=df_time["sum"],
+            y=df_time["count"],
             mode="lines",
-            name="合計",
+            name="筆數",
             line={"color": "green", "dash": "dot"},
+            yaxis="y2",
             visible="legendonly",
         ))
 
@@ -214,17 +216,17 @@ if buckets:
         annotation_position="bottom right",
     )
 
-    # 標記超過閾值的點（紅色）
-    if "avg" in df_time.columns:
-        anomaly_mask = df_time["avg"] > anomaly_threshold
-        anomaly_df = df_time[anomaly_mask]
+    # 標記異常 bucket（anomaly_count > 0 的 bucket）
+    if "anomaly_count" in df_time.columns:
+        anomaly_df = df_time[df_time["anomaly_count"] > 0]
         if not anomaly_df.empty:
             fig_line.add_trace(go.Scatter(
                 x=anomaly_df["ts_tw"],
-                y=anomaly_df["avg"],
+                y=anomaly_df["avg_value"],
                 mode="markers",
-                name="異常點",
-                marker={"color": "red", "size": 10, "symbol": "x"},
+                name="含異常",
+                marker={"color": "red", "size": 12, "symbol": "x"},
+                hovertext=anomaly_df["anomaly_count"].apply(lambda c: f"{c} 筆異常"),
             ))
 
     fig_line.update_layout(
@@ -249,7 +251,8 @@ def _fetch_categories(date_from: str, date_to: str) -> list[dict]:
     params: dict = {"date_from": date_from, "date_to": date_to}
     resp = client.get("/analytics/categories", params=params)
     if resp.status_code == 200:
-        return resp.json().get("items", [])
+        # BE schema: {"categories": [{category, count, avg_value, anomaly_count}]}
+        return resp.json().get("categories", [])
     return []
 
 
@@ -263,32 +266,32 @@ with st.spinner("載入類別分佈..."):
 
 if cat_items:
     df_cat = pd.DataFrame(cat_items)
-    # 依合計值降冪排序
-    if "sum" in df_cat.columns and "category" in df_cat.columns:
-        df_cat = df_cat.sort_values("sum", ascending=False)
+    # 依筆數降冪排序
+    if "count" in df_cat.columns and "category" in df_cat.columns:
+        df_cat = df_cat.sort_values("count", ascending=False)
 
     bar_col1, bar_col2 = st.columns(2)
 
     with bar_col1:
-        # 合計長條圖
-        fig_bar_sum = go.Figure(go.Bar(
+        # 筆數長條圖
+        fig_bar_count = go.Figure(go.Bar(
             x=df_cat.get("category", []),
-            y=df_cat.get("sum", []),
+            y=df_cat.get("count", []),
             marker_color="steelblue",
         ))
-        fig_bar_sum.update_layout(
-            title="各類別合計值",
+        fig_bar_count.update_layout(
+            title="各類別筆數",
             xaxis_title="類別",
-            yaxis_title="合計",
+            yaxis_title="筆數",
             margin={"l": 40, "r": 20, "t": 50, "b": 40},
         )
-        st.plotly_chart(fig_bar_sum, use_container_width=True)
+        st.plotly_chart(fig_bar_count, use_container_width=True)
 
     with bar_col2:
         # 平均長條圖
         fig_bar_avg = go.Figure(go.Bar(
             x=df_cat.get("category", []),
-            y=df_cat.get("avg", []),
+            y=df_cat.get("avg_value", []),
             marker_color="darkorange",
         ))
         fig_bar_avg.update_layout(
@@ -302,7 +305,7 @@ if cat_items:
     # 類別詳細表格
     st.subheader("類別詳細資料")
     display_df = df_cat.copy()
-    rename_map = {"category": "類別", "sum": "合計", "avg": "平均", "count": "筆數"}
+    rename_map = {"category": "類別", "count": "筆數", "avg_value": "平均值", "anomaly_count": "異常筆數"}
     display_df = display_df.rename(columns={k: v for k, v in rename_map.items() if k in display_df.columns})
     st.dataframe(display_df, use_container_width=True, hide_index=True)
 else:
