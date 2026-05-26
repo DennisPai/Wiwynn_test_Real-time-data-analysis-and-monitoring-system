@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+from datetime import datetime, timezone
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -8,9 +9,11 @@ from fastapi.responses import Response
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import get_db, require_role
+from app.api.deps import AnyRole, get_db, require_role
+from app.core.security import hash_password, verify_password
 from app.models.user import Role, User
-from app.schemas.user import PaginatedResponse, UserResponse, UserUpdate
+from app.schemas.user import PaginatedResponse, PasswordUpdateRequest, UserResponse, UserUpdate
+from app.services.audit_log_service import write_audit_log
 
 router = APIRouter(prefix="/users", tags=["users"])
 
@@ -100,3 +103,59 @@ async def delete_user(
         raise HTTPException(status_code=404, detail="使用者不存在")
     await db.delete(user)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.patch("/{user_id}/password")
+async def update_password(
+    user_id: int,
+    body: PasswordUpdateRequest,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, AnyRole],
+) -> dict:
+    """
+    改密碼（Q12）。
+    - admin：可改任意人，不需 old_password
+    - user/viewer：只能改自己，需 old_password
+    回傳 {"ok": true, "updated_at": "..."}
+    """
+    result = await db.execute(select(User).where(User.id == user_id))
+    target = result.scalar_one_or_none()
+    if target is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="使用者不存在")
+
+    is_self = (target.id == current_user.id)
+    is_admin_acting_on_other = (current_user.role == Role.admin and not is_self)
+
+    # 非 admin 且非自己：403
+    if not is_self and not is_admin_acting_on_other:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="權限不足")
+
+    # 改自己（含 admin 改自己）：需 old_password
+    if is_self:
+        if not body.old_password:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="改自己密碼需提供 old_password",
+            )
+        if not verify_password(body.old_password, target.password_hash):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="舊密碼錯誤",
+            )
+
+    target.password_hash = hash_password(body.new_password)
+    target.updated_at = datetime.now(tz=timezone.utc)
+    await db.flush()
+    await db.refresh(target)
+
+    # C2-3: audit log
+    await write_audit_log(
+        db,
+        action="update_password",
+        user_id=current_user.id,
+        target_type="user",
+        target_id=str(target.id),
+        meta={"is_self": is_self, "is_admin_change": is_admin_acting_on_other},
+    )
+
+    return {"ok": True, "updated_at": target.updated_at.isoformat()}

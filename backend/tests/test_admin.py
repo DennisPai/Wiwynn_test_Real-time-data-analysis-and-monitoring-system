@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.app_setting import AppSetting
 from app.models.audit_log import AuditLog
 from app.models.realtime_metric import RealtimeMetric
+from app.models.realtime_metric_wide import RealtimeMetricWide
 from app.models.user import User
 from tests.conftest import get_token, make_auth_header
 
@@ -76,7 +77,7 @@ async def seed_audit_log(db_session: AsyncSession, admin_user: User) -> AuditLog
 
 @pytest_asyncio.fixture
 async def seed_realtime_metric(db_session: AsyncSession) -> RealtimeMetric:
-    """植入一筆 realtime_metric。"""
+    """植入一筆 realtime_metric（long format，供相容性 fixture 使用）。"""
     from decimal import Decimal
     metric = RealtimeMetric(
         value=Decimal("55.1234"),
@@ -89,6 +90,26 @@ async def seed_realtime_metric(db_session: AsyncSession) -> RealtimeMetric:
     await db_session.commit()
     await db_session.refresh(metric)
     return metric
+
+
+@pytest_asyncio.fixture
+async def seed_realtime_wide(db_session: AsyncSession) -> RealtimeMetricWide:
+    """植入一筆 realtime_metric_wide（wide format）。"""
+    from decimal import Decimal
+    wide = RealtimeMetricWide(
+        ts=datetime.now(tz=timezone.utc),
+        temperature=Decimal("25.1234"),
+        humidity=Decimal("60.0000"),
+        pressure=Decimal("1013.0000"),
+        voltage=Decimal("12.0000"),
+        cpu_usage=Decimal("40.0000"),
+        anomaly_flags={"temperature": False, "humidity": False, "pressure": False, "voltage": False, "cpu_usage": False},
+        source="simulator",
+    )
+    db_session.add(wide)
+    await db_session.commit()
+    await db_session.refresh(wide)
+    return wide
 
 
 # ──────────────────────────────────────────
@@ -206,9 +227,9 @@ async def test_admin_db_status_viewer_forbidden(client: AsyncClient, viewer_toke
 
 @pytest.mark.asyncio
 async def test_admin_realtime_history_admin(
-    client: AsyncClient, admin_token: str, seed_realtime_metric: RealtimeMetric
+    client: AsyncClient, admin_token: str, seed_realtime_wide: RealtimeMetricWide
 ) -> None:
-    """admin 可查詢即時指標歷史。"""
+    """admin 可查詢即時指標歷史（wide format）。"""
     resp = await client.get(
         "/api/v1/admin/realtime-history",
         headers=make_auth_header(admin_token),
@@ -217,14 +238,18 @@ async def test_admin_realtime_history_admin(
     body = resp.json()
     assert "items" in body
     assert body["total"] >= 1
-    # 確認 response shape
+    # 確認 wide response shape
     if body["items"]:
         item = body["items"][0]
-        assert "id" in item
-        assert "value" in item
-        assert "category" in item
         assert "ts" in item
-        assert "is_anomaly" in item
+        assert "temperature" in item
+        assert "humidity" in item
+        assert "pressure" in item
+        assert "voltage" in item
+        assert "cpu_usage" in item
+        assert "anomaly_flags" in item
+        assert "schema_version" in item
+        assert item["schema_version"] == "v2"
 
 
 @pytest.mark.asyncio
@@ -250,18 +275,19 @@ async def test_admin_realtime_history_viewer_forbidden(
 
 
 @pytest.mark.asyncio
-async def test_admin_realtime_history_filter_category(
-    client: AsyncClient, admin_token: str, seed_realtime_metric: RealtimeMetric
+async def test_admin_realtime_history_pagination(
+    client: AsyncClient, admin_token: str, seed_realtime_wide: RealtimeMetricWide
 ) -> None:
-    """category filter 有效。"""
+    """分頁參數有效。"""
     resp = await client.get(
-        "/api/v1/admin/realtime-history?category=temperature",
+        "/api/v1/admin/realtime-history?page=1&size=5",
         headers=make_auth_header(admin_token),
     )
     assert resp.status_code == 200
     body = resp.json()
-    for item in body["items"]:
-        assert item["category"] == "temperature"
+    assert body["page"] == 1
+    assert body["size"] == 5
+    assert len(body["items"]) <= 5
 
 
 # ──────────────────────────────────────────

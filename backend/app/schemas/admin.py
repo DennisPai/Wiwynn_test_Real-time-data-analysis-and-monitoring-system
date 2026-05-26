@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel
 
@@ -36,6 +36,8 @@ class DBStatusResponse(BaseModel):
 
 
 class RealtimeMetricResponse(BaseModel):
+    """Legacy long-format response (kept for backward compat)."""
+
     id: int
     value: float
     category: str

@@ -35,3 +35,49 @@ class CategoryStat(BaseModel):
 
 class CategoriesResponse(BaseModel):
     categories: list[CategoryStat]
+
+
+# ── Unified summary（Q8）──────────────────────────────────────
+
+class RealtimeMetricStat(BaseModel):
+    avg: float
+    min: float
+    max: float
+    anomaly_count: int
+
+
+class RealtimeSummary(BaseModel):
+    total: int
+    anomaly_count: int
+    metrics: dict[str, RealtimeMetricStat]
+
+
+class RecordsSummary(BaseModel):
+    total: int
+    anomaly_count: int
+    categories: list[str]
+
+
+class CombinedSummary(BaseModel):
+    total: int
+    anomaly_count: int
+
+
+class UnifiedSummaryResponse(BaseModel):
+    source: str  # "both" | "realtime" | "records"
+    realtime: RealtimeSummary | None = None
+    records: RecordsSummary | None = None
+    combined: CombinedSummary | None = None
+
+
+# ── Realtime categories（Q11）────────────────────────────────
+
+class RealtimeMetricCategory(BaseModel):
+    metric: str
+    count: int
+    avg: float
+    anomaly_count: int
+
+
+class RealtimeCategoriesResponse(BaseModel):
+    metrics: list[RealtimeMetricCategory]
