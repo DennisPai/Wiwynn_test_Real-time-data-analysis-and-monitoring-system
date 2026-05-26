@@ -474,7 +474,7 @@ _ADMIN_METRIC_COLORS = {
 }
 
 with tab_rt_hist:
-    st.subheader("即時資料歷史（Wide 格式）")
+    st.subheader("即時資料歷史")
 
     # D6-8: 移除類別 selectbox（wide format 無需 category 篩選）
     with st.expander("篩選條件", expanded=True):
@@ -565,7 +565,7 @@ with tab_rt_hist:
                             ))
 
             fig_rth.update_layout(
-                title="即時資料歷史趨勢（Wide 格式，5 條 metric 線）",
+                title="即時資料歷史趨勢（5 條 metric 線）",
                 xaxis_title="時間（台北）",
                 yaxis_title="數值",
                 legend={"orientation": "h", "y": -0.3},
@@ -651,6 +651,7 @@ with tab_settings:
                             value=current_num,
                             format="%.4f",
                             key=f"setting_input_{key}",
+                            label_visibility="collapsed",
                         )
                         new_val_str = str(new_val_num)
                         value_changed = abs(new_val_num - current_num) > 1e-10
@@ -659,11 +660,11 @@ with tab_settings:
                             f"{key} 的值",
                             value=current_val,
                             key=f"setting_input_{key}",
+                            label_visibility="collapsed",
                         )
                         value_changed = new_val_str != current_val
 
                 with setting_col2:
-                    st.markdown("&nbsp;", unsafe_allow_html=True)
                     if st.button(
                         "儲存",
                         key=f"setting_save_{key}",
