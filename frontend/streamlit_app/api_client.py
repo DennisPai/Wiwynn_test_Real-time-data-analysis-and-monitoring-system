@@ -9,7 +9,11 @@ from typing import Any
 import httpx
 import streamlit as st
 
-_BACKEND_URL = os.environ.get("BACKEND_URL", "http://localhost:8000")
+_BACKEND_URL = os.environ.get(
+    "BACKEND_URL",
+    "https://wiwynn-test-real-time-data-analysis-and-monitoring-backend.zeabur.app",
+)
+# 本地開發者請設 BACKEND_URL=http://localhost:8000 override
 _API_PREFIX = "/api/v1"
 
 

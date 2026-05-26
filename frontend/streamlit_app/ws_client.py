@@ -17,7 +17,12 @@ import streamlit as st
 
 logger = logging.getLogger(__name__)
 
-_WS_URL = os.environ.get("WS_URL", "ws://localhost:8000/api/v1/ws/realtime")
+_WS_URL = os.environ.get(
+    "WS_URL",
+    "wss://wiwynn-test-real-time-data-analysis-and-monitoring-backend.zeabur.app/ws/realtime",
+)
+# 本地開發者請設 WS_URL=ws://localhost:8000/ws/realtime override
+# 注意：BE 的 WS endpoint 是 /ws/realtime（不走 /api/v1 prefix）
 
 _BACKOFF_INITIAL = 1      # 秒
 _BACKOFF_MAX = 30         # 秒
