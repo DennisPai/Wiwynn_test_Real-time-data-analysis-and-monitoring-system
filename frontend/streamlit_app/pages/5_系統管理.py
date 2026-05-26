@@ -1,15 +1,14 @@
 """
-Admin 頁面：系統管理（僅 admin 角色可存取）。
+系統管理頁面（僅 admin 角色可存取）。
 
-5 個 tab：
-  1. 使用者列表    — GET /users，PATCH /users/{id}（role / is_active）
-  2. 系統日誌      — GET /admin/logs，篩選 + DataFrame
-  3. DB 狀態       — GET /admin/db-status，pool 卡 + tables 表格
-  4. 即時資料歷史  — GET /admin/realtime-history，分頁 DataFrame + 圖表
-  5. 系統設定      — GET /admin/settings，每 setting 一個 number_input，PATCH 即時生效
+5 個 tab（去 emoji）：
+  1. 使用者列表  — GET /users、角色權限矩陣、改密碼
+  2. 系統日誌    — GET /admin/logs
+  3. 資料庫狀態  — GET /admin/db-status
+  4. 即時資料歷史 — GET /admin/realtime-history（wide format）+ 5 條折線
+  5. 系統設定    — GET/PATCH /admin/settings
 
 非 admin → st.error + st.stop()。
-時間均 tz_convert("Asia/Taipei") 後顯示。
 """
 from __future__ import annotations
 
@@ -23,8 +22,8 @@ from api_client import APIClient
 from auth import current_role, current_user, logout, require_auth
 
 st.set_page_config(
-    page_title="Admin — 即時資料分析與監控系統",
-    page_icon="⚙️",
+    page_title="系統管理 — 即時資料分析與監控系統",
+    page_icon=None,
     layout="wide",
 )
 
@@ -41,7 +40,6 @@ if role != "admin":
     st.info("如需管理功能，請洽系統管理員提升權限，或改以 admin 帳號登入。")
     st.stop()
 
-# ── 時間輔助函式 ───────────────────────────────────────────────────────────────
 
 def format_ts(iso_str: str | None) -> str:
     """將後端 UTC ISO8601 字串轉換為台北時間並格式化。"""
@@ -57,7 +55,7 @@ def format_ts(iso_str: str | None) -> str:
 # ── 右上角：使用者資訊 + 登出 ─────────────────────────────────────────────────
 col_title, col_user = st.columns([3, 1])
 with col_title:
-    st.title("⚙️ 系統管理")
+    st.title("系統管理")
 with col_user:
     st.markdown(
         f"**{user.get('display_name', '未知')}**  \n"
@@ -69,13 +67,13 @@ with col_user:
 
 st.markdown("---")
 
-# ── 5 個 Tab ──────────────────────────────────────────────────────────────────
+# ── D6-3: 5 個 tab label 全去 emoji ────────────────────────────────────────────
 tab_users, tab_logs, tab_db, tab_rt_hist, tab_settings = st.tabs([
-    "👥 使用者列表",
-    "📋 系統日誌",
-    "🗄️ DB 狀態",
-    "📡 即時資料歷史",
-    "🔧 系統設定",
+    "使用者列表",
+    "系統日誌",
+    "資料庫狀態",
+    "即時資料歷史",
+    "系統設定",
 ])
 
 
@@ -85,6 +83,26 @@ tab_users, tab_logs, tab_db, tab_rt_hist, tab_settings = st.tabs([
 
 with tab_users:
     st.subheader("使用者管理")
+
+    # D6-4: 角色權限說明 markdown table
+    with st.expander("角色權限說明", expanded=False):
+        st.markdown("""
+| 操作 | admin | user | viewer |
+|---|---|---|---|
+| 登入系統 | ✓ | ✓ | ✓ |
+| 查看儀表板 | ✓ | ✓ | ✓ |
+| 查看即時監控 | ✓ | ✓ | ✓ |
+| 查看分析報表 | ✓ | ✓ | ✓ |
+| 查看資料管理 | ✓ | ✓ | ✓（唯讀）|
+| 新增資料 | ✓ | ✓ | ✗ |
+| 編輯自己的資料 | ✓ | ✓ | ✗ |
+| 編輯他人資料 | ✓ | ✗ | ✗ |
+| 刪除自己的資料 | ✓ | ✓ | ✗ |
+| 刪除他人資料 | ✓ | ✗ | ✗ |
+| 批量匯入 CSV/JSON | ✓ | ✓ | ✗ |
+| 存取系統管理 | ✓ | ✗ | ✗ |
+| 管理使用者角色 | ✓ | ✗ | ✗ |
+""")
 
     # 分頁控制
     u_col1, u_col2 = st.columns([1, 3])
@@ -101,7 +119,6 @@ with tab_users:
     )
     u_role_filter = None if u_role_filter_label == "（全部）" else u_role_filter_label
 
-    # 取得使用者列表
     @st.cache_data(ttl=15)
     def _fetch_users(page: int, size: int, role_filter: str | None) -> tuple[list[dict], int, int]:
         params: dict = {"page": page, "size": size}
@@ -123,7 +140,6 @@ with tab_users:
     st.markdown(f"**共 {u_total} 筆，第 {int(u_page)}/{u_pages} 頁**")
 
     if u_items:
-        # 顯示總覽 DataFrame
         df_u = pd.DataFrame(u_items)
         display_map = {
             "id": "ID",
@@ -136,7 +152,7 @@ with tab_users:
         available = [c for c in display_map if c in df_u.columns]
         df_u_show = df_u[available].rename(columns=display_map).copy()
         if "啟用" in df_u_show.columns:
-            df_u_show["啟用"] = df_u_show["啟用"].apply(lambda v: "✅" if v else "❌")
+            df_u_show["啟用"] = df_u_show["啟用"].apply(lambda v: "是" if v else "否")
         if "建立時間" in df_u_show.columns:
             df_u_show["建立時間"] = df_u_show["建立時間"].apply(format_ts)
         st.dataframe(df_u_show, use_container_width=True, hide_index=True)
@@ -144,36 +160,35 @@ with tab_users:
         st.markdown("---")
         st.subheader("編輯使用者")
 
-        # 選擇使用者
         user_options = {f"[{u['id']}] {u.get('email', '')} ({u.get('role', '')})": u for u in u_items}
         selected_label = st.selectbox("選擇使用者", list(user_options.keys()), key="u_edit_select")
-        selected_user = user_options.get(selected_label)
+        selected_user_item = user_options.get(selected_label)
 
-        if selected_user:
+        if selected_user_item:
             edit_col1, edit_col2 = st.columns(2)
             with edit_col1:
-                new_role = st.selectbox(
+                new_role_val = st.selectbox(
                     "角色",
                     ["admin", "user", "viewer"],
-                    index=["admin", "user", "viewer"].index(selected_user.get("role", "user")),
+                    index=["admin", "user", "viewer"].index(selected_user_item.get("role", "user")),
                     key="u_edit_role",
                 )
             with edit_col2:
                 new_is_active = st.checkbox(
                     "啟用帳號",
-                    value=bool(selected_user.get("is_active", True)),
+                    value=bool(selected_user_item.get("is_active", True)),
                     key="u_edit_active",
                 )
 
             if st.button("更新使用者", key="u_edit_btn", type="primary"):
                 patch_payload: dict = {}
-                if new_role != selected_user.get("role"):
-                    patch_payload["role"] = new_role
-                if new_is_active != bool(selected_user.get("is_active", True)):
+                if new_role_val != selected_user_item.get("role"):
+                    patch_payload["role"] = new_role_val
+                if new_is_active != bool(selected_user_item.get("is_active", True)):
                     patch_payload["is_active"] = new_is_active
 
                 if patch_payload:
-                    resp = client.patch(f"/users/{selected_user['id']}", json=patch_payload)
+                    resp = client.patch(f"/users/{selected_user_item['id']}", json=patch_payload)
                     if resp.status_code == 200:
                         st.success("使用者資料已更新。")
                         st.cache_data.clear()
@@ -186,6 +201,62 @@ with tab_users:
                         st.error(f"更新失敗：{detail}")
                 else:
                     st.info("沒有任何變更。")
+
+        st.markdown("---")
+
+        # D6-5: 改密碼表單（admin 改任意人，改自己需 old_password）
+        st.subheader("修改密碼")
+        st.caption("Admin 改自己需提供舊密碼；Admin 改他人無需舊密碼。")
+
+        # 選擇要改密碼的對象
+        pw_target_options = {f"[{u['id']}] {u.get('email', '')} ({u.get('role', '')})": u for u in u_items}
+        pw_target_label = st.selectbox("選擇要修改密碼的使用者", list(pw_target_options.keys()), key="pw_target_select")
+        pw_target = pw_target_options.get(pw_target_label)
+
+        if pw_target:
+            is_self_pw = (pw_target.get("id") == user.get("id"))
+            with st.form("admin_change_password_form"):
+                pw_old = st.text_input(
+                    "舊密碼（改自己時必填）",
+                    type="password",
+                    key="admin_pw_old",
+                )
+                pw_new = st.text_input("新密碼（至少 8 個字元）", type="password", key="admin_pw_new")
+                pw_new2 = st.text_input("確認新密碼", type="password", key="admin_pw_new2")
+                pw_submitted = st.form_submit_button("修改密碼", use_container_width=True)
+
+            if pw_submitted:
+                pw_errors: list[str] = []
+                if not pw_new:
+                    pw_errors.append("請輸入新密碼。")
+                elif len(pw_new) < 8:
+                    pw_errors.append("新密碼至少需要 8 個字元。")
+                if pw_new != pw_new2:
+                    pw_errors.append("兩次新密碼輸入不一致。")
+
+                if pw_errors:
+                    for err in pw_errors:
+                        st.error(err)
+                else:
+                    target_uid = pw_target.get("id")
+                    body: dict = {"new_password": pw_new}
+                    if is_self_pw:
+                        if not pw_old:
+                            st.error("修改自己密碼必須提供舊密碼。")
+                        else:
+                            body["old_password"] = pw_old
+                    # admin 改他人：不送 old_password
+
+                    if not (is_self_pw and not pw_old):
+                        resp = client.patch(f"/users/{target_uid}/password", json=body)
+                        if resp.status_code == 200:
+                            st.success(f"已成功修改 {pw_target.get('email', '')} 的密碼。")
+                        else:
+                            try:
+                                detail = resp.json().get("detail", "修改失敗")
+                            except Exception:
+                                detail = f"修改失敗（HTTP {resp.status_code}）"
+                            st.error(f"修改失敗：{detail}")
     else:
         st.info("目前沒有符合條件的使用者。")
 
@@ -197,8 +268,7 @@ with tab_users:
 with tab_logs:
     st.subheader("稽核日誌")
 
-    # 篩選條件
-    with st.expander("🔍 篩選條件", expanded=True):
+    with st.expander("篩選條件", expanded=True):
         log_col1, log_col2, log_col3 = st.columns(3)
         with log_col1:
             log_page_size = st.selectbox("每頁筆數", [20, 50, 100], index=0, key="log_size")
@@ -219,7 +289,6 @@ with tab_logs:
                 key="log_date_to",
             )
 
-    # 取得日誌
     @st.cache_data(ttl=15)
     def _fetch_logs(
         page: int, size: int, user_id: str | None,
@@ -275,7 +344,6 @@ with tab_logs:
             df_logs_show["時間（台北）"] = df_logs_show["時間（台北）"].apply(format_ts)
         st.dataframe(df_logs_show, use_container_width=True, hide_index=True)
 
-        # metadata 展開（BE schema 欄位名為 meta）
         if "meta" in df_logs.columns:
             with st.expander("查看 metadata 詳情"):
                 for item in log_items[:10]:
@@ -286,13 +354,13 @@ with tab_logs:
 
 
 # ════════════════════════════════════════════════════════════════════════════════
-# Tab 3：DB 狀態
+# Tab 3：資料庫狀態
 # ════════════════════════════════════════════════════════════════════════════════
 
 with tab_db:
     st.subheader("資料庫狀態")
 
-    if st.button("🔄 重新整理 DB 狀態", key="refresh_db"):
+    if st.button("重新整理 DB 狀態", key="refresh_db"):
         st.cache_data.clear()
 
     @st.cache_data(ttl=10)
@@ -310,14 +378,12 @@ with tab_db:
             db_status = {}
 
     if db_status:
-        # 整體狀態
         is_ok = db_status.get("ok", False)
         if is_ok:
-            st.success("● 資料庫連線正常")
+            st.success("資料庫連線正常")
         else:
-            st.error("● 資料庫連線異常")
+            st.error("資料庫連線異常")
 
-        # Pool 狀態卡片
         pool = db_status.get("pool", {})
         if pool:
             st.subheader("連線池狀態")
@@ -326,28 +392,45 @@ with tab_db:
             pool_col2.metric("已借出（checked_out）", pool.get("checked_out", "—"))
             pool_col3.metric("溢出（overflow）", pool.get("overflow", "—"))
 
-        # 資料表格
         tables = db_status.get("tables", [])
         if tables:
             st.subheader("資料表統計")
             df_tables = pd.DataFrame(tables)
             rename_map = {"name": "表名", "row_count": "筆數"}
-            df_tables = df_tables.rename(columns={k: v for k, v in rename_map.items() if k in df_tables.columns})
+            df_tables = df_tables.rename(
+                columns={k: v for k, v in rename_map.items() if k in df_tables.columns}
+            )
             st.dataframe(df_tables, use_container_width=True, hide_index=True)
     else:
         st.warning("無法取得 DB 狀態資料。")
 
 
 # ════════════════════════════════════════════════════════════════════════════════
-# Tab 4：即時資料歷史
+# Tab 4：即時資料歷史（D6-6: wide format）
 # ════════════════════════════════════════════════════════════════════════════════
 
-with tab_rt_hist:
-    st.subheader("即時資料歷史")
+_ADMIN_METRIC_KEYS = ["temperature", "humidity", "pressure", "voltage", "cpu_usage"]
+_ADMIN_METRIC_ZH = {
+    "temperature": "溫度(C)",
+    "humidity": "濕度(%)",
+    "pressure": "氣壓(hPa)",
+    "voltage": "電壓(V)",
+    "cpu_usage": "CPU(%)",
+}
+_ADMIN_METRIC_COLORS = {
+    "temperature": "royalblue",
+    "humidity": "green",
+    "pressure": "orange",
+    "voltage": "purple",
+    "cpu_usage": "teal",
+}
 
-    # 篩選條件
-    with st.expander("🔍 篩選條件", expanded=True):
-        rth_col1, rth_col2, rth_col3 = st.columns(3)
+with tab_rt_hist:
+    st.subheader("即時資料歷史（Wide 格式）")
+
+    # D6-8: 移除類別 selectbox（wide format 無需 category 篩選）
+    with st.expander("篩選條件", expanded=True):
+        rth_col1, rth_col2 = st.columns(2)
         with rth_col1:
             now_utc = datetime.now(tz=timezone.utc)
             rth_date_from = st.date_input(
@@ -361,20 +444,15 @@ with tab_rt_hist:
                 key="rth_date_to",
             )
         with rth_col2:
-            _KNOWN_CATEGORIES = ["（全部）", "temperature", "humidity", "pressure", "vibration", "power"]
-            rth_cat_label = st.selectbox("類別", _KNOWN_CATEGORIES, index=0, key="rth_cat")
-            rth_category: str | None = None if rth_cat_label == "（全部）" else rth_cat_label
-        with rth_col3:
             rth_page_size = st.selectbox("每頁筆數", [20, 50, 100], index=0, key="rth_size")
             rth_page = st.number_input("頁碼", min_value=1, value=1, step=1, key="rth_page")
 
     @st.cache_data(ttl=10)
-    def _fetch_rt_history(
-        date_from: str, date_to: str, category: str | None, page: int, size: int,
+    def _fetch_rt_history_wide(
+        date_from: str, date_to: str, page: int, size: int,
     ) -> tuple[list[dict], int, int]:
+        # D6-6: 不帶 category 參數（wide API 已移除）
         params: dict = {"date_from": date_from, "date_to": date_to, "page": page, "size": size}
-        if category:
-            params["category"] = category
         resp = client.get("/admin/realtime-history", params=params)
         if resp.status_code == 200:
             body = resp.json()
@@ -383,10 +461,9 @@ with tab_rt_hist:
 
     with st.spinner("載入即時資料歷史..."):
         try:
-            rth_items, rth_total, rth_pages = _fetch_rt_history(
+            rth_items, rth_total, rth_pages = _fetch_rt_history_wide(
                 date_from=rth_date_from.isoformat() + "T00:00:00Z",
                 date_to=rth_date_to.isoformat() + "T23:59:59Z",
-                category=rth_category,
                 page=int(rth_page),
                 size=int(rth_page_size),
             )
@@ -399,62 +476,83 @@ with tab_rt_hist:
     if rth_items:
         df_rth = pd.DataFrame(rth_items)
 
-        # ── 趨勢圖 ──────────────────────────────────────────────────────────
-        if "ts" in df_rth.columns and "value" in df_rth.columns:
+        # D6-7: 折線圖 5 條線
+        if "ts" in df_rth.columns:
             df_rth["ts_tw"] = pd.to_datetime(df_rth["ts"], utc=True).dt.tz_convert("Asia/Taipei")
-            df_rth["value_float"] = pd.to_numeric(df_rth["value"], errors="coerce")
 
             fig_rth = go.Figure()
-            fig_rth.add_trace(go.Scatter(
-                x=df_rth["ts_tw"],
-                y=df_rth["value_float"],
-                mode="lines+markers",
-                name="數值",
-                line={"color": "purple"},
-            ))
-
-            # 標記異常點
-            if "is_anomaly" in df_rth.columns:
-                anomaly_rth = df_rth[df_rth["is_anomaly"].fillna(False)]
-                if not anomaly_rth.empty:
+            for metric_key in _ADMIN_METRIC_KEYS:
+                if metric_key in df_rth.columns:
+                    df_rth[f"{metric_key}_float"] = pd.to_numeric(df_rth[metric_key], errors="coerce")
                     fig_rth.add_trace(go.Scatter(
-                        x=anomaly_rth["ts_tw"],
-                        y=anomaly_rth["value_float"],
-                        mode="markers",
-                        name="異常",
-                        marker={"color": "red", "size": 10, "symbol": "x"},
+                        x=df_rth["ts_tw"],
+                        y=df_rth[f"{metric_key}_float"],
+                        mode="lines",
+                        name=_ADMIN_METRIC_ZH.get(metric_key, metric_key),
+                        line={"color": _ADMIN_METRIC_COLORS.get(metric_key, "gray"), "width": 2},
                     ))
 
+                    # 異常點
+                    if "anomaly_flags" in df_rth.columns:
+                        def _is_anom_rth(row: pd.Series, mk: str = metric_key) -> bool:
+                            flags = row.get("anomaly_flags", {})
+                            if isinstance(flags, dict):
+                                return bool(flags.get(mk, False))
+                            return False
+                        anom_mask_rth = df_rth.apply(_is_anom_rth, axis=1)
+                        anom_rth = df_rth[anom_mask_rth]
+                        if not anom_rth.empty:
+                            fig_rth.add_trace(go.Scatter(
+                                x=anom_rth["ts_tw"],
+                                y=anom_rth[f"{metric_key}_float"],
+                                mode="markers",
+                                name=f"{_ADMIN_METRIC_ZH.get(metric_key, metric_key)} 異常",
+                                marker={
+                                    "color": "red",
+                                    "size": 10,
+                                    "symbol": "circle-open",
+                                    "line": {"width": 2, "color": "red"},
+                                },
+                                showlegend=True,
+                            ))
+
             fig_rth.update_layout(
-                title=f"即時資料歷史趨勢{'（' + rth_category + '）' if rth_category else '（全類別）'}",
+                title="即時資料歷史趨勢（Wide 格式，5 條 metric 線）",
                 xaxis_title="時間（台北）",
                 yaxis_title="數值",
-                margin={"l": 40, "r": 20, "t": 50, "b": 40},
+                legend={"orientation": "h", "y": -0.3},
+                margin={"l": 40, "r": 20, "t": 50, "b": 100},
             )
             st.plotly_chart(fig_rth, use_container_width=True)
 
-        # ── DataFrame ────────────────────────────────────────────────────────
-        rename_map = {
-            "id": "ID",
-            "value": "數值",
-            "category": "類別",
-            "ts": "時間（台北）",
-            "source": "來源",
-            "is_anomaly": "異常",
-        }
-        available = [c for c in rename_map if c in df_rth.columns]
-        df_rth_show = df_rth[available].rename(columns=rename_map).copy()
-        if "時間（台北）" in df_rth_show.columns:
-            df_rth_show["時間（台北）"] = df_rth_show["時間（台北）"].apply(format_ts)
-        if "異常" in df_rth_show.columns:
-            df_rth_show["異常"] = df_rth_show["異常"].apply(lambda v: "⚠️ 是" if v else "正常")
+        # Wide format DataFrame：ts + 5 metric column + anomaly_flags 拆 5 boolean
+        display_rows_rth = []
+        for _, row in df_rth.iterrows():
+            flags = row.get("anomaly_flags", {})
+            if not isinstance(flags, dict):
+                flags = {}
+            display_rows_rth.append({
+                "時間（台北）": format_ts(row.get("ts")),
+                "溫度(C)": row.get("temperature"),
+                "濕度(%)": row.get("humidity"),
+                "氣壓(hPa)": row.get("pressure"),
+                "電壓(V)": row.get("voltage"),
+                "CPU(%)": row.get("cpu_usage"),
+                "溫度異常": "是" if flags.get("temperature", False) else "否",
+                "濕度異常": "是" if flags.get("humidity", False) else "否",
+                "氣壓異常": "是" if flags.get("pressure", False) else "否",
+                "電壓異常": "是" if flags.get("voltage", False) else "否",
+                "CPU 異常": "是" if flags.get("cpu_usage", False) else "否",
+                "來源": row.get("source", "simulator"),
+            })
+        df_rth_show = pd.DataFrame(display_rows_rth)
         st.dataframe(df_rth_show, use_container_width=True, hide_index=True)
     else:
         st.info("查詢區間內沒有即時資料歷史。")
 
 
 # ════════════════════════════════════════════════════════════════════════════════
-# Tab 5：系統設定
+# Tab 5：系統設定（D6-9: 去 emoji）
 # ════════════════════════════════════════════════════════════════════════════════
 
 with tab_settings:
@@ -482,14 +580,13 @@ with tab_settings:
             description = setting.get("description", "")
             updated_at = format_ts(setting.get("updated_at"))
 
-            with st.expander(f"🔧 {key}", expanded=True):
+            with st.expander(f"設定項目：{key}", expanded=True):
                 st.caption(description)
                 st.caption(f"最後更新：{updated_at}" if updated_at else "尚未更新")
 
                 setting_col1, setting_col2 = st.columns([3, 1])
 
                 with setting_col1:
-                    # 嘗試以數字 input 顯示（numeric settings）
                     try:
                         current_num = float(current_val)
                         new_val_num = st.number_input(
@@ -501,7 +598,6 @@ with tab_settings:
                         new_val_str = str(new_val_num)
                         value_changed = abs(new_val_num - current_num) > 1e-10
                     except (ValueError, TypeError):
-                        # 非數字：使用文字 input
                         new_val_str = st.text_input(
                             f"{key} 的值",
                             value=current_val,
@@ -510,7 +606,7 @@ with tab_settings:
                         value_changed = new_val_str != current_val
 
                 with setting_col2:
-                    st.markdown("&nbsp;", unsafe_allow_html=True)  # 垂直對齊用
+                    st.markdown("&nbsp;", unsafe_allow_html=True)
                     if st.button(
                         "儲存",
                         key=f"setting_save_{key}",
@@ -523,7 +619,7 @@ with tab_settings:
                                 json={"value": new_val_str},
                             )
                             if resp.status_code == 200:
-                                st.success(f"✅ `{key}` 已更新為 `{new_val_str}`")
+                                st.success(f"`{key}` 已更新為 `{new_val_str}`")
                                 st.cache_data.clear()
                                 st.rerun()
                             else:
@@ -538,6 +634,6 @@ with tab_settings:
         st.warning("無法取得系統設定，或設定列表為空。")
 
     st.markdown("---")
-    if st.button("🔄 重新載入設定", key="reload_settings"):
+    if st.button("重新載入設定", key="reload_settings"):
         st.cache_data.clear()
         st.rerun()
