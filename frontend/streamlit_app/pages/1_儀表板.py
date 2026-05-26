@@ -9,7 +9,7 @@ import pandas as pd
 import streamlit as st
 
 from api_client import APIClient
-from auth import current_role, current_user, logout, require_auth
+from auth import current_role, current_user, logout, render_role_matrix, require_auth
 
 st.set_page_config(
     page_title="儀表板 — 即時資料分析與監控系統",
@@ -38,7 +38,13 @@ with col_user:
         logout()
         st.switch_page("Home.py")
 
+st.caption("您可以在這裡掌握系統整體狀態：上方為角色權限說明，中間為即時連線狀態與最近告警數，下方為合計筆數統計與最近資料快照。可在底部展開帳號設定修改密碼。")
+
 st.markdown("---")
+
+# ── B.2.1 角色權限矩陣固定卡片（Story #2）────────────────────────────────────────
+with st.container(border=True):
+    render_role_matrix(role)
 
 # ── D2-4 System status header ─────────────────────────────────────────────────
 @st.cache_data(ttl=10)

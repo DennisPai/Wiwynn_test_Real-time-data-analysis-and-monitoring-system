@@ -13,12 +13,59 @@ st.set_page_config(
     layout="centered",
 )
 
+# 試用帳號對應表（Plan B query_params zero-click 路徑）
+_DEMO_ACCOUNTS: dict[str, tuple[str, str]] = {
+    "admin": ("admin@example.com", "admin123"),
+    "user": ("user@example.com", "user123"),
+    "viewer": ("viewer@example.com", "viewer123"),
+}
+
+# ── Plan B: query_params demo_login 自動登入（spike A.3 結論：走 Plan B）──────
+# VA-17 programmatic submit 不可行，改用 st.query_params 繞過 form，zero-click
+_demo_login_role = st.query_params.get("demo_login")
+if _demo_login_role in _DEMO_ACCOUNTS:
+    _demo_email, _demo_password = _DEMO_ACCOUNTS[_demo_login_role]
+    # 清除 query_params 避免重複觸發
+    st.query_params.clear()
+    with st.spinner(f"正在以 {_demo_login_role} 登入..."):
+        _success, _message = login(_demo_email, _demo_password)
+    if _success:
+        st.switch_page("pages/1_儀表板.py")
+    else:
+        st.error(f"登入失敗：{_message}")
+
 # 若已登入，直接轉到 Dashboard
 if st.session_state.get("token"):
     st.switch_page("pages/1_儀表板.py")
 
 st.title("即時資料分析與監控系統")
 st.markdown("---")
+
+# ── 試用帳號 expander（在 st.tabs 之前，登入/註冊共用區）────────────────────────
+# 評審 5 秒內看到三組帳號 + 一鍵登入（Story #1 AC-1 ~ AC-4）
+# 密碼明文顯示為 demo 便利性設計（AC edge case 5 已接受）
+with st.expander("試用帳號（Demo 用，點按鈕直接登入）", expanded=True):
+    st.caption("點擊下方按鈕，系統將自動帶入對應帳號並登入，無需手動輸入。")
+    st.markdown(
+        "| 角色 | Email | 密碼 |\n"
+        "|---|---|---|\n"
+        "| **Admin**（系統管理員）| admin@example.com | admin123 |\n"
+        "| **User**（一般使用者）| user@example.com | user123 |\n"
+        "| **Viewer**（一般訪客）| viewer@example.com | viewer123 |"
+    )
+    btn_col1, btn_col2, btn_col3 = st.columns(3)
+    with btn_col1:
+        if st.button("以 Admin 登入", key="login_as_admin", use_container_width=True):
+            st.query_params.update(demo_login="admin")
+            st.rerun()
+    with btn_col2:
+        if st.button("以 User 登入", key="login_as_user", use_container_width=True):
+            st.query_params.update(demo_login="user")
+            st.rerun()
+    with btn_col3:
+        if st.button("以 Viewer 登入", key="login_as_viewer", use_container_width=True):
+            st.query_params.update(demo_login="viewer")
+            st.rerun()
 
 tab_login, tab_register = st.tabs(["登入", "註冊"])
 

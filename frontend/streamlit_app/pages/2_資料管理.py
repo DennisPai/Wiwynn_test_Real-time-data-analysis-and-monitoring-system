@@ -48,6 +48,8 @@ with col_user:
         logout()
         st.switch_page("Home.py")
 
+st.caption("您可以在這裡管理資料：上傳 CSV / JSON 批量匯入、用篩選條件搜尋已有資料、inline 編輯欄位後一次儲存。Viewer 角色為唯讀，User 只能編輯自己的資料，Admin 可編輯所有資料。")
+
 st.markdown("---")
 
 

@@ -65,6 +65,8 @@ with col_user:
         logout()
         st.switch_page("Home.py")
 
+st.caption("您是 Admin 角色，可以在這裡管理整個系統：使用者列表（改角色 / 啟用 / 刪除 / 改密碼）、查看 Audit log、檢視 DB 連線池與表統計、即時資料歷史查詢、動態調整異常閾值與 tick 間隔。")
+
 st.markdown("---")
 
 # ── D6-3: 5 個 tab label 全去 emoji ────────────────────────────────────────────
@@ -84,8 +86,8 @@ tab_users, tab_logs, tab_db, tab_rt_hist, tab_settings = st.tabs([
 with tab_users:
     st.subheader("使用者管理")
 
-    # D6-4: 角色權限說明 markdown table
-    with st.expander("角色權限說明", expanded=False):
+    # D6-4: 角色權限說明 markdown table（v3 預設展開，配合 Story #2）
+    with st.expander("角色權限說明", expanded=True):
         st.markdown("""
 | 操作 | admin | user | viewer |
 |---|---|---|---|

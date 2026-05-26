@@ -109,6 +109,8 @@ if not st.session_state.get("rt_history_loaded"):
 # ── 自動刷新（每 1000 ms = 1 秒）────────────────────────────────────────────
 refresh_count = st_autorefresh(interval=1000, key="realtime_autorefresh")
 
+st.caption("您可以在這裡觀察 5 大指標的即時資料：透過 WebSocket 每秒推送，紅色 marker 為超閾值異常告警，淡粉紅背景的資料列代表該秒有異常發生。可用 multiselect 選擇要顯示的指標線。")
+
 st.markdown("---")
 
 # ── D5-5: System status header（連線狀態 + last update + active alerts）────────
