@@ -233,10 +233,13 @@ with st.container(border=True):
 _dyn_high, _dyn_low, _is_dynamic = fetch_dynamic_thresholds(role)
 if role == "admin":
     if _is_dynamic:
+        # admin 且成功取得動態閾值 → 顯示 caption
         st.caption(f"閾值來源：動態（high={list(_dyn_high.values())[0]}, low={list(_dyn_low.values())[0]}，30 秒 TTL cache）")
     else:
-        st.caption("閾值來源：預設 fallback（無法取得動態設定）")
+        # admin 但動態閾值取得失敗（BE 連線問題）→ 顯示 warning（H-5 修正）
+        st.warning("無法取得動態閾值，使用預設值（請檢查 BE 連線）")
 else:
+    # viewer/user → 顯示 caption（VA-9 BLOCKER 已驗：viewer/user 打 /admin/settings 得 403）
     st.caption("閾值來源：預設值（僅 Admin 可在系統管理頁調整）")
 
 # ── D5-10: 移除類別 selectbox，改「顯示哪些線」multiselect ──────────────────────

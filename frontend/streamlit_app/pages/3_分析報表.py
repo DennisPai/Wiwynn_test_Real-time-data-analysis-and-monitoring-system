@@ -9,6 +9,7 @@ from datetime import datetime, timedelta, timezone
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
+from plotly.subplots import make_subplots
 
 from api_client import APIClient
 from auth import current_role, current_user, logout, require_auth
@@ -180,6 +181,15 @@ def _fetch_realtime_categories(date_from: str, date_to: str) -> list[dict]:
     return []
 
 
+@st.cache_data(ttl=10)
+def _fetch_realtime_history_trend() -> list[dict]:
+    """取得最近 60 分鐘即時資料 wide snapshots（BE 最大 3600 秒）。"""
+    resp = client.get("/realtime/history", params={"seconds": 3600})
+    if resp.status_code == 200:
+        return resp.json().get("snapshots", [])
+    return []
+
+
 with st.spinner("載入時間趨勢..."):
     try:
         dp = _build_date_params()
@@ -207,15 +217,28 @@ if trend_source == "records":
 
         fig_line = go.Figure()
 
-        # 主折線（avg_value）
+        # 主折線（avg_value）— 視覺強化：線粗 3、marker 變大、填充陰影
         if "avg_value" in df_time.columns:
             fig_line.add_trace(go.Scatter(
                 x=df_time["ts_tw"],
                 y=df_time["avg_value"],
                 mode="lines+markers",
                 name="平均值",
-                line={"color": "royalblue"},
+                line={"color": "royalblue", "width": 3},
+                marker={"size": 10, "symbol": "circle"},
+                fill="tozeroy",
+                fillcolor="rgba(65,105,225,0.15)",
             ))
+
+            # 在每個 marker 上方加 count 筆數 annotation
+            if "count" in df_time.columns and not df_time.empty:
+                for _, row in df_time.iterrows():
+                    if pd.notna(row["avg_value"]) and pd.notna(row.get("count")):
+                        fig_line.add_annotation(
+                            x=row["ts_tw"], y=row["avg_value"],
+                            text=f"{int(row['count'])} 筆", showarrow=False,
+                            yshift=15, font=dict(size=10, color="gray"),
+                        )
 
         # 筆數（count）次要折線
         if "count" in df_time.columns:
@@ -250,45 +273,117 @@ if trend_source == "records":
             margin={"l": 40, "r": 20, "t": 50, "b": 80},
         )
         st.plotly_chart(fig_line, use_container_width=True)
+        st.caption(f"{'day' if f_bucket == 'day' else 'hour'} bucket：每{'日' if f_bucket == 'day' else '小時'} 1 點；如資料少請改 {'hour 粒度' if f_bucket == 'day' else 'day 粒度'}看更{'詳細' if f_bucket == 'day' else '匯總'}。")
     else:
         st.info("此區間內無時間趨勢資料。")
 else:
-    # 即時資料：顯示各 metric 彙總長條
-    with st.spinner("載入即時資料 metrics..."):
+    # 即時資料：真正的時間趨勢折線圖（過去 60 分鐘，5 metric 各自獨立 Y 軸）
+    _RT_METRIC_KEYS = ["temperature", "humidity", "pressure", "voltage", "cpu_usage"]
+    _RT_METRIC_ZH = {
+        "temperature": "溫度(C)",
+        "humidity": "濕度(%)",
+        "pressure": "氣壓(hPa)",
+        "voltage": "電壓(V)",
+        "cpu_usage": "CPU(%)",
+    }
+    _RT_METRIC_COLORS = {
+        "temperature": "royalblue",
+        "humidity": "green",
+        "pressure": "orange",
+        "voltage": "purple",
+        "cpu_usage": "teal",
+    }
+
+    with st.spinner("載入即時資料趨勢..."):
         try:
-            dp = _build_date_params()
-            rt_cat_items = _fetch_realtime_categories(dp["date_from"], dp["date_to"])
+            rt_snapshots = _fetch_realtime_history_trend()
         except Exception as exc:
-            st.error(f"無法取得即時資料 metrics：{exc}")
-            rt_cat_items = []
+            st.error(f"無法取得即時資料趨勢：{exc}")
+            rt_snapshots = []
 
-    if rt_cat_items:
-        df_rt_cat = pd.DataFrame(rt_cat_items)
-        metric_zh = {
-            "temperature": "溫度(C)",
-            "humidity": "濕度(%)",
-            "pressure": "氣壓(hPa)",
-            "voltage": "電壓(V)",
-            "cpu_usage": "CPU(%)",
-        }
-        if "metric" in df_rt_cat.columns:
-            df_rt_cat["metric_zh"] = df_rt_cat["metric"].apply(lambda m: metric_zh.get(m, m))
+    if rt_snapshots:
+        df_rt_hist = pd.DataFrame(rt_snapshots)
+        # 轉換時間軸為台北時間
+        if "ts" in df_rt_hist.columns and not df_rt_hist.empty:
+            try:
+                df_rt_hist["ts_tw"] = pd.to_datetime(df_rt_hist["ts"], utc=True, format="ISO8601").dt.tz_convert("Asia/Taipei")
+            except Exception:
+                df_rt_hist["ts_tw"] = df_rt_hist["ts"]
+        else:
+            df_rt_hist["ts_tw"] = pd.Series(dtype="object")
 
-        fig_rt_bar = go.Figure(go.Bar(
-            x=df_rt_cat.get("metric_zh", df_rt_cat.get("metric", [])),
-            y=df_rt_cat.get("avg", []),
-            marker_color="steelblue",
-            name="平均值",
-        ))
-        fig_rt_bar.update_layout(
-            title="即時資料各 Metric 平均值（選定日期範圍）",
-            xaxis_title="Metric",
-            yaxis_title="平均值",
-            margin={"l": 40, "r": 20, "t": 50, "b": 40},
-        )
-        st.plotly_chart(fig_rt_bar, use_container_width=True)
+        # 取交集（只顯示 DataFrame 中實際存在的 metric 欄位）
+        available_metrics = [m for m in _RT_METRIC_KEYS if m in df_rt_hist.columns]
+        n_selected = len(available_metrics)
+
+        if n_selected > 0:
+            # 使用 spike-results.md A.5 公式：height=min(180*n, 900)、shared_xaxes=True
+            fig_rt_trend = make_subplots(
+                rows=n_selected,
+                cols=1,
+                shared_xaxes=True,
+                vertical_spacing=0.04,
+                subplot_titles=[_RT_METRIC_ZH.get(m, m) for m in available_metrics],
+            )
+
+            for idx, metric_key in enumerate(available_metrics, start=1):
+                df_rt_hist[f"{metric_key}_float"] = pd.to_numeric(df_rt_hist[metric_key], errors="coerce")
+
+                fig_rt_trend.add_trace(
+                    go.Scatter(
+                        x=df_rt_hist["ts_tw"],
+                        y=df_rt_hist[f"{metric_key}_float"],
+                        mode="lines",
+                        name=_RT_METRIC_ZH.get(metric_key, metric_key),
+                        line={"color": _RT_METRIC_COLORS.get(metric_key, "gray"), "width": 2},
+                        showlegend=False,
+                    ),
+                    row=idx, col=1,
+                )
+
+                # 異常點標記
+                if "anomaly_flags" in df_rt_hist.columns:
+                    anom_mask = df_rt_hist.apply(
+                        lambda r, mk=metric_key: bool(
+                            r.get("anomaly_flags", {}).get(mk, False)
+                            if isinstance(r.get("anomaly_flags"), dict)
+                            else False
+                        ),
+                        axis=1,
+                    )
+                    anom_df = df_rt_hist[anom_mask]
+                    if not anom_df.empty:
+                        fig_rt_trend.add_trace(
+                            go.Scatter(
+                                x=anom_df["ts_tw"],
+                                y=anom_df[f"{metric_key}_float"],
+                                mode="markers",
+                                marker={
+                                    "color": "red",
+                                    "size": 10,
+                                    "symbol": "circle-open",
+                                    "line": {"width": 2, "color": "red"},
+                                },
+                                showlegend=False,
+                            ),
+                            row=idx, col=1,
+                        )
+
+            fig_rt_trend.update_layout(
+                title="即時資料趨勢（過去 60 分鐘）",
+                height=min(180 * n_selected, 900),
+                margin={"l": 60, "r": 20, "t": 60, "b": 40},
+                uirevision="rt_trend_chart",
+                showlegend=False,
+            )
+            fig_rt_trend.update_xaxes(title_text="時間（台北）", row=n_selected, col=1)
+
+            st.plotly_chart(fig_rt_trend, use_container_width=True)
+            st.caption("即時資料時間趨勢顯示過去 60 分鐘；如需更長範圍請看「錄入資料」source（支援 30 天）。")
+        else:
+            st.info("即時資料欄位不足，無法繪製趨勢圖。")
     else:
-        st.info("此區間內無即時資料。")
+        st.info("此時間內無即時資料，或後端尚未啟動 simulator（等待 simulator 預熱後重新整理）。")
 
 st.markdown("---")
 

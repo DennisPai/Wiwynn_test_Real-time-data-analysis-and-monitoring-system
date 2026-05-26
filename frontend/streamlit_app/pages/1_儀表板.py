@@ -118,6 +118,21 @@ def _fetch_unified_summary() -> dict:
     return {}
 
 
+@st.cache_data(ttl=300)
+def _fetch_unified_summary_yesterday() -> dict:
+    """從 /analytics/unified-summary 取得昨日統一摘要統計（TTL 5 分鐘）。"""
+    now_utc = datetime.now(tz=timezone.utc)
+    params = {
+        "date_from": (now_utc - timedelta(days=2)).isoformat(),
+        "date_to": (now_utc - timedelta(days=1)).isoformat(),
+        "source": "both",
+    }
+    resp = client.get("/analytics/unified-summary", params=params)
+    if resp.status_code == 200:
+        return resp.json()
+    return {}
+
+
 @st.cache_data(ttl=30)
 def _fetch_recent_realtime(n: int = 10) -> list[dict]:
     """取得最近 N 筆即時資料快照。"""
@@ -147,6 +162,11 @@ with st.spinner("載入統計資料..."):
         st.error(f"無法取得統計資料：{exc}")
         unified = {}
 
+try:
+    unified_yesterday = _fetch_unified_summary_yesterday()
+except Exception:
+    unified_yesterday = {}
+
 # 顯示 metric cards（Story #9：品質指標化）
 combined = unified.get("combined", {})
 realtime_info = unified.get("realtime", {})
@@ -156,24 +176,33 @@ records_info = unified.get("records", {})
 _total = combined.get("total", 0) or 0
 _anomaly = combined.get("anomaly_count", 0) or 0
 
+# 昨日異常率計算（用於 col1 delta vs 昨日）
+_yesterday_combined = unified_yesterday.get("combined", {}) if unified_yesterday else {}
+_yesterday_total = _yesterday_combined.get("total", 0) or 0
+_yesterday_anomaly = _yesterday_combined.get("anomaly_count", 0) or 0
+
 # 除零保護：total == 0 → 健康度 / 異常率顯示載入中狀態
 if unified and _total > 0:
     # 異常率：anomaly_count / total × 100，取 3 位小數
     _anomaly_rate = (_anomaly / _total) * 100
 
+    # 昨日異常率計算（用於 delta）
+    if _yesterday_total > 0:
+        _yesterday_rate = (_yesterday_anomaly / _yesterday_total) * 100
+        _delta_vs_yesterday = _anomaly_rate - _yesterday_rate
+        _health_delta = f"{_delta_vs_yesterday:+.3f}% vs 昨日"
+        _health_delta_color = "inverse"  # inverse: 今日比昨日低（數值降）= 好 = 綠
+    else:
+        _health_delta = "— 無昨日資料"
+        _health_delta_color = "off"
+
     # 健康度判斷：< 1% 健康 / 1-5% 警示 / > 5% 異常
     if _anomaly_rate < 1.0:
         _health_label = "● 健康"
-        _health_delta = f"異常率 {_anomaly_rate:.3f}%"
-        _health_delta_color = "inverse"   # inverse: 負值（低異常率）顯綠
     elif _anomaly_rate <= 5.0:
         _health_label = "⚠ 警示"
-        _health_delta = f"異常率 {_anomaly_rate:.3f}%"
-        _health_delta_color = "normal"    # normal: 正值顯紅
     else:
         _health_label = "✕ 異常"
-        _health_delta = f"異常率 {_anomaly_rate:.3f}%"
-        _health_delta_color = "normal"    # normal: 正值顯紅
 
     _anomaly_rate_display = f"{_anomaly_rate:.3f}%"
 elif not unified:
@@ -191,13 +220,13 @@ else:
 
 col1, col2, col3, col4 = st.columns(4)
 
-# col1：系統健康度
+# col1：系統健康度（delta = 今日 vs 昨日異常率差）
 col1.metric(
     label="系統健康度",
     value=_health_label if unified else "---",
     delta=_health_delta,
     delta_color=_health_delta_color,
-    help="基於過去 30 天異常率：< 1% 健康 / 1-5% 警示 / > 5% 異常",
+    help="基於過去 30 天異常率：< 1% 健康 / 1-5% 警示 / > 5% 異常；delta 為今日 vs 昨日",
 )
 
 # col2：異常率（過去 30 天）
