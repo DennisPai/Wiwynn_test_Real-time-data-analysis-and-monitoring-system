@@ -47,24 +47,26 @@ sequenceDiagram
   Backend-->>Frontend: JWT + user role
   Frontend->>Frontend: 存 session_state.token
 
-  User->>Frontend: 上傳 CSV (bulk import)
+  User->>Frontend: 上傳 wide CSV (bulk import)
   Frontend->>Backend: POST /api/v1/data/bulk-import multipart
-  Backend->>Backend: csv_importer 逐行 validate
-  Backend->>DB: INSERT valid records
-  Backend-->>Frontend: {inserted, failed, errors}
+  Backend->>Backend: csv_importer 解析 header<br/>偵測舊 long header → 整檔拒絕
+  Backend->>Backend: 逐行 validate (ts 必填 + 5 metric 至少 1 非 NULL)
+  Backend->>Backend: anomaly_detector 依目前閾值<br/>per-metric 自動填 anomaly_flags
+  Backend->>DB: INSERT valid wide records
+  Backend-->>Frontend: {inserted, failed, errors[{row, reason, missing_columns}]}
 
   Scheduler-->>Backend: tick (每 1 秒)
-  Backend->>Backend: 隨機生成 RealtimeTick + 判斷 anomaly
+  Backend->>Backend: simulator 生成 5 metric snapshot<br/>+ anomaly_detector 判斷 per-metric flag
   Backend->>Frontend: WebSocket broadcast tick
   Frontend->>Frontend: Plotly 即時更新
 
   Scheduler-->>Backend: flush (每 5 秒)
-  Backend->>DB: BATCH INSERT realtime_metrics
+  Backend->>DB: BATCH INSERT realtime_metric_wide
 
-  Admin->>Frontend: 改異常閾值
-  Frontend->>Backend: PATCH /api/v1/admin/settings/anomaly_threshold_high
+  Admin->>Frontend: 改 per-metric 異常閾值
+  Frontend->>Backend: PATCH /api/v1/admin/settings/anomaly_temperature_high
   Backend->>DB: UPDATE app_settings
-  Backend->>Backend: realtime_service.reload_thresholds()
+  Backend->>Backend: anomaly_detector.reload_thresholds()
   Note over Scheduler,Backend: 下一個 tick 即生效
 ```
 
@@ -86,12 +88,16 @@ erDiagram
         datetime updated_at
     }
     DATA_RECORDS {
-        int id PK
-        string title
-        decimal value
-        string category
-        datetime recorded_at
-        bool is_anomaly
+        bigint id PK
+        datetime_tz ts "UTC timestamp"
+        decimal temperature "nullable"
+        decimal humidity "nullable"
+        decimal pressure "nullable"
+        decimal voltage "nullable"
+        decimal cpu_usage "nullable"
+        json anomaly_flags "per-metric bool dict (5 keys)"
+        string source "user / simulator"
+        string note "nullable, max 200"
         int owner_id FK
         datetime created_at
         datetime updated_at
@@ -103,6 +109,17 @@ erDiagram
         datetime ts
         string source
         bool is_anomaly
+    }
+    REALTIME_METRIC_WIDE {
+        bigint id PK
+        datetime_tz ts "UTC timestamp"
+        decimal temperature "nullable"
+        decimal humidity "nullable"
+        decimal pressure "nullable"
+        decimal voltage "nullable"
+        decimal cpu_usage "nullable"
+        json anomaly_flags "per-metric bool dict (5 keys)"
+        string source "simulator default"
     }
     AUDIT_LOGS {
         bigint id PK
@@ -121,6 +138,13 @@ erDiagram
         datetime updated_at
     }
 ```
+
+> **Wide schema 設計重點**
+> - `DATA_RECORDS` 採 wide format：每筆 row 同時承載 5 metric snapshot，搭配 `anomaly_flags` JSON 做 per-metric 異常標記。
+> - **CHECK constraint `ck_data_records_at_least_one_metric`**：強制 `temperature / humidity / pressure / voltage / cpu_usage` 至少 1 個非 NULL，DB 層阻擋空 row。
+> - `anomaly_flags` 為 5 key 完整 bool dict（temperature / humidity / pressure / voltage / cpu_usage），由 `anomaly_detector` 依 `APP_SETTINGS` 的 per-metric 閾值即時計算。
+> - `REALTIME_METRICS` 為 scope A 既有單 metric buffer 表（保留相容）；`REALTIME_METRIC_WIDE` 為高頻 simulator buffer，與 `DATA_RECORDS` 共用欄位設計，後台批次 flush。
+> - Design Evolution：long format（title / value / category 單 metric per row）→ unified wide schema（多 metric per row + per-metric anomaly breakdown）。
 
 ## Docker 拓樸
 
@@ -147,7 +171,8 @@ flowchart TB
 | 模組 | 入口 | 主要檔案 | 對外 |
 |---|---|---|---|
 | 使用者管理 | `/api/v1/auth/*` + `/api/v1/users/*` | `app/services/auth_service.py` | JWT token + UserResponse |
-| 資料管理 | `/api/v1/data/*` | `app/services/data_service.py` + `app/utils/csv_importer.py` | CRUD / bulk import |
-| 即時監控 | `/ws/realtime` + `/api/v1/admin/realtime-history` | `app/services/realtime_service.py` + `app/core/ws_manager.py` + `app/services/batch_writer.py` | WebSocket push + DB 批次寫入 |
-| 資料分析 | `/api/v1/analytics/*` | `app/services/analytics_service.py` + `app/utils/excel_exporter.py` | 統計 JSON + Excel 串流 |
-| 系統管理 | `/api/v1/admin/*` | `app/api/v1/admin.py` | 使用者 / 日誌 / DB 狀態 / 設定 |
+| 資料管理 | `/api/v1/data/*` | `app/services/data_service.py` + `app/utils/csv_importer.py` | Wide schema CRUD（13 欄）/ bulk import / per-row error breakdown |
+| 異常偵測 | `anomaly_detector` 服務 + `POST /api/v1/data/anomaly-preview` | `app/services/anomaly_detector.py` | per-metric 閾值載入 + bool dict 計算（5 key 完整）+ CSV 預覽不寫入 DB |
+| 即時監控 | `/ws/realtime` + `/api/v1/admin/realtime-history` | `app/services/realtime_service.py` + `app/core/ws_manager.py` + `app/services/batch_writer.py` | WebSocket push + DB 批次寫入 `realtime_metric_wide` |
+| 資料分析 | `/api/v1/analytics/*` | `app/services/analytics_service.py` + `app/utils/excel_exporter.py` | 統計 JSON（per-metric 聚合）+ Excel 串流 |
+| 系統管理 | `/api/v1/admin/*`（含 `PATCH /admin/settings/{key}`）| `app/api/v1/admin.py` | 使用者 / 日誌 / DB 狀態 / per-metric 閾值動態調整 |

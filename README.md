@@ -2,15 +2,25 @@
 
 完整 SaaS 雛形：FastAPI 後端 + Streamlit 前端 + MariaDB + Docker Compose，五大模組涵蓋使用者管理、資料 CRUD、即時 WebSocket 推送、分析報表、系統管理。
 
+## 資料模型設計（Wide Schema）
+
+每筆 `data_records` row 同時承載 5 個 metric 的 snapshot（temperature / humidity / pressure / voltage / cpu_usage），搭配 `anomaly_flags` JSON 欄位記錄 per-metric 異常標記。設計重點：
+
+- **單筆 row = 一個時間點的多 metric snapshot**：避免長表 join 開銷，分析查詢直接走單表聚合
+- **`anomaly_flags` 為 per-metric bool dict**：5 key（temperature / humidity / pressure / voltage / cpu_usage）完整、不得多 key；單筆 row 可同時標記多個 metric 異常
+- **CHECK constraint 強制至少 1 metric 非 NULL**：DB 層阻擋空 row，搭配 Pydantic `at_least_one_metric` validator 雙重保險
+- **`source` 區分資料來源**：`user`（人工 / CSV import）vs `simulator`（即時模擬器）
+- **Design Evolution**：long format（title / value / category 單 metric per row）→ unified wide schema（多 metric per row + per-metric anomaly breakdown），便於多 metric 同時段比對與閾值微調
+
 ## 功能模組
 
 | 模組 | 重點功能 |
 |---|---|
 | 使用者管理 | 註冊 / 登入（JWT）/ 登出 / 個人資料；3 級角色（Admin / User / Viewer）+ RBAC |
-| 資料管理 | CRUD（含分頁 / 篩選 / 排序）/ CSV + JSON 批量導入（含逐行錯誤回報）/ 權限：擁有者或 Admin |
-| 即時監控 | APScheduler 每秒生成模擬資料 → WebSocket 即時推送 → 前端 Plotly 折線圖即時更新 / 超閾值異常標記 |
-| 資料分析 | 統計（總計 / 平均 / 最大 / 最小）/ 時間範圍查詢（小時 / 日 bucket）/ 分類聚合 / Excel 匯出 |
-| 系統管理（Admin）| 使用者列表 / 系統日誌 / DB 連線池狀態 / 即時資料歷史查詢 / 動態調整異常閾值 |
+| 資料管理 | Wide schema CRUD（含分頁 / 來源 / metric range 篩選 / 排序）/ CSV + JSON 批量匯入（含逐行錯誤回報 + missing_columns 細項）/ 權限：擁有者或 Admin |
+| 即時監控 | APScheduler 每秒生成模擬資料 → WebSocket 即時推送 → 前端 Plotly 折線圖即時更新 / per-metric 異常閾值標記 |
+| 資料分析 | 統計（總計 / 平均 / 最大 / 最小）/ 時間範圍查詢（小時 / 日 bucket）/ per-metric 聚合 / Excel 匯出 |
+| 系統管理（Admin）| 使用者列表 / 系統日誌 / DB 連線池狀態 / 即時資料歷史查詢 / 動態調整 per-metric 異常閾值 |
 
 ## 技術棧
 
@@ -91,9 +101,9 @@ docker compose ps
 |---|---|
 | `/api/v1/auth/*` | 註冊 / 登入 / 登出 / 取得個人資料 |
 | `/api/v1/users/*` | 使用者管理（admin 限定） |
-| `/api/v1/data/*` | 資料 CRUD + 批量匯入 |
+| `/api/v1/data/*` | Wide schema 資料 CRUD + 批量匯入 + anomaly preview |
 | `/api/v1/analytics/*` | 統計分析 + Excel 匯出 |
-| `/api/v1/admin/*` | 系統管理（日誌 / DB 狀態 / 設定 / 即時歷史）|
+| `/api/v1/admin/*` | 系統管理（日誌 / DB 狀態 / per-metric 閾值設定 / 即時歷史）|
 | `/ws/realtime` | WebSocket 即時推送（query string 帶 `token=<JWT>`）|
 | `/health` | 健康檢查（給 docker healthcheck）|
 
@@ -105,8 +115,50 @@ TOKEN=$(curl -s -X POST $BE/api/v1/auth/login \
   -H 'Content-Type: application/json' \
   -d '{"email":"admin@example.com","password":"admin123"}' | jq -r .access_token)
 
-# CSV 批量匯入（端點是 bulk-import 不是 import）
+# 建立單筆資料（wide schema：ts 必填、5 metric 至少 1 個非 null）
+# anomaly_flags 不傳時，後端 anomaly_detector 會依目前閾值自動填 per-metric bool
+curl -X POST $BE/api/v1/data \
+  -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "ts": "2026-05-26T08:00:00Z",
+    "temperature": 25.3,
+    "humidity": 67.8,
+    "pressure": 1014.2,
+    "voltage": 12.05,
+    "cpu_usage": 48.6,
+    "source": "user",
+    "note": "manual sample"
+  }'
+
+# 回傳 (wide schema 13 欄)：
+# {
+#   "id": 1,
+#   "ts": "2026-05-26T08:00:00Z",
+#   "temperature": "25.3000",
+#   "humidity": "67.8000",
+#   "pressure": "1014.2000",
+#   "voltage": "12.0500",
+#   "cpu_usage": "48.6000",
+#   "anomaly_flags": {"temperature": false, "humidity": false, "pressure": false, "voltage": false, "cpu_usage": false},
+#   "source": "user",
+#   "note": "manual sample",
+#   "owner_id": 1,
+#   "created_at": "2026-05-26T08:00:01Z",
+#   "updated_at": "2026-05-26T08:00:01Z"
+# }
+
+# 列出資料（wide schema query params：sources / metric range / 時間範圍）
+curl "$BE/api/v1/data?sources=user&sources=simulator&metric=temperature&min_value=80&max_value=120&sort_by=ts&sort_order=desc&page=1&size=20" \
+  -H "Authorization: Bearer $TOKEN"
+
+# CSV 批量匯入（wide CSV，端點是 bulk-import 不是 import）
 curl -X POST $BE/api/v1/data/bulk-import \
+  -H "Authorization: Bearer $TOKEN" \
+  -F "file=@docs/sample_data.csv"
+
+# Anomaly preview：上傳 CSV 預覽哪幾列在現有閾值下會被標記，不寫入 DB
+curl -X POST $BE/api/v1/data/anomaly-preview \
   -H "Authorization: Bearer $TOKEN" \
   -F "file=@docs/sample_data.csv"
 
@@ -114,11 +166,11 @@ curl -X POST $BE/api/v1/data/bulk-import \
 curl "$BE/api/v1/analytics/timerange?date_from=2026-05-01T00:00:00&date_to=2026-05-31T23:59:59" \
   -H "Authorization: Bearer $TOKEN"
 
-# Admin 動態調整異常閾值（key 名是 anomaly_threshold_high / anomaly_threshold_low，value 必為字串）
-curl -X PATCH $BE/api/v1/admin/settings/anomaly_threshold_high \
+# Admin 動態調整 per-metric 異常閾值（key 名為 anomaly_{metric}_high / anomaly_{metric}_low）
+curl -X PATCH $BE/api/v1/admin/settings/anomaly_temperature_high \
   -H "Authorization: Bearer $TOKEN" \
   -H 'Content-Type: application/json' \
-  -d '{"value":"150.0"}'
+  -d '{"value":"80.0"}'
 
 # WebSocket 即時推送（token 走 query string）
 # wss://<BE_HOST>/ws/realtime?token=<JWT>
@@ -126,9 +178,25 @@ curl -X PATCH $BE/api/v1/admin/settings/anomaly_threshold_high \
 
 ## 範例資料
 
-匯入流程：登入 → Data 頁面 → 上傳 CSV → 選 `docs/sample_data.csv`（60 筆，5 個 category，跨 7 天，含 9 筆高異常 + 5 筆低異常）。
+匯入流程：登入 → Data 頁面 → 上傳 CSV → 選 `docs/sample_data.csv`（wide format，跨多日，含 per-metric 異常範例）。
 
-CSV 欄位：`title,value,category,recorded_at`
+**CSV 欄位**（wide schema）：
+
+```
+ts,temperature,humidity,pressure,voltage,cpu_usage,anomaly_flags,source,note,owner_email
+```
+
+| 欄位 | 必填 | 說明 |
+|---|:-:|---|
+| `ts` | ✅ | UTC 時間戳（ISO8601，建議帶 `Z` 或 `+00:00`）|
+| `temperature` / `humidity` / `pressure` / `voltage` / `cpu_usage` | 5 取 1 | 5 個 metric，至少 1 個非空。空白會被視為 NULL |
+| `anomaly_flags` | 選填 | JSON 字串（5 key bool dict）。**留空時後端 anomaly_detector 會依目前閾值自動計算** |
+| `source` | 選填 | `user`（預設）或 `simulator` |
+| `note` | 選填 | 自由文字備註，最長 200 字 |
+| `owner_email` | 選填 | 僅 admin 可指定；user 角色填了會被擋。空白時 owner = 登入者 |
+
+> JSON 批量匯入也支援（副檔名 `.json`），結構為 `[{...}, {...}]` 一行一筆。
+> bulk-import 偵測到舊 long header（`title,value,category,...`）會整檔拒絕，避免誤匯入。
 
 ## 本地開發（不走 Docker）
 
