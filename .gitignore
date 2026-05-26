@@ -46,3 +46,9 @@ htmlcov/
 
 # 錯放的 model weights
 yolov8*.pt
+
+# OpenSpec internal discussions (not for GitHub)
+openspec/changes/
+
+# Claude Code local
+.claude/
