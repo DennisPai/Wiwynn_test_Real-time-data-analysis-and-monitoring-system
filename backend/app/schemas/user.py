@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Generic, TypeVar
 
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel, EmailStr, Field
 
 from app.models.user import Role
 
@@ -26,6 +26,13 @@ class UserUpdate(BaseModel):
     display_name: str | None = None
     role: Role | None = None
     is_active: bool | None = None
+
+
+class PasswordUpdateRequest(BaseModel):
+    """改密碼 request body（PATCH /users/{id}/password）。"""
+
+    new_password: str = Field(..., min_length=8)
+    old_password: str | None = None
 
 
 class PaginatedResponse(BaseModel, Generic[T]):

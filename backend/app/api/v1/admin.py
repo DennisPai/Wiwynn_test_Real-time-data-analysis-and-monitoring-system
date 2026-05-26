@@ -15,6 +15,7 @@ from app.models.app_setting import AppSetting
 from app.models.audit_log import AuditLog
 from app.models.data_record import DataRecord
 from app.models.realtime_metric import RealtimeMetric
+from app.models.realtime_metric_wide import RealtimeMetricWide
 from app.models.user import User
 from app.schemas.admin import (
     AppSettingResponse,
@@ -25,6 +26,7 @@ from app.schemas.admin import (
     RealtimeMetricResponse,
     TableInfo,
 )
+from app.schemas.realtime import RealtimeSnapshotResponse
 from app.schemas.user import PaginatedResponse
 from app.services.audit_log_service import write_audit_log
 
@@ -107,6 +109,7 @@ async def db_status(
         ("data_records", DataRecord),
         ("audit_logs", AuditLog),
         ("realtime_metrics", RealtimeMetric),
+        ("realtime_metrics_wide", RealtimeMetricWide),
         ("app_settings", AppSetting),
     ]
     tables: list[TableInfo] = []
@@ -123,7 +126,7 @@ async def db_status(
     )
 
 
-@router.get("/realtime-history", response_model=PaginatedResponse[RealtimeMetricResponse])
+@router.get("/realtime-history", response_model=PaginatedResponse[RealtimeSnapshotResponse])
 async def realtime_history(
     db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[User, AdminOnly],
@@ -131,22 +134,22 @@ async def realtime_history(
     size: int = Query(20, ge=1, le=100),
     date_from: datetime | None = Query(None),
     date_to: datetime | None = Query(None),
-    category: str | None = Query(None),
-) -> PaginatedResponse[RealtimeMetricResponse]:
-    """列出即時指標歷史（#21）。admin 限定。"""
-    stmt = select(RealtimeMetric)
+) -> PaginatedResponse[RealtimeSnapshotResponse]:
+    """
+    列出即時指標歷史（wide format）（C4 / #21）。admin 限定。
+    回傳 wide snapshot rows（ts + 5 metric + anomaly_flags）。
+    """
+    stmt = select(RealtimeMetricWide)
 
-    if category:
-        stmt = stmt.where(RealtimeMetric.category == category)
     if date_from is not None:
-        stmt = stmt.where(RealtimeMetric.ts >= date_from)
+        stmt = stmt.where(RealtimeMetricWide.ts >= date_from)
     if date_to is not None:
-        stmt = stmt.where(RealtimeMetric.ts <= date_to)
+        stmt = stmt.where(RealtimeMetricWide.ts <= date_to)
 
     count_stmt = select(func.count()).select_from(stmt.subquery())
     total: int = (await db.execute(count_stmt)).scalar_one()
 
-    stmt = stmt.order_by(RealtimeMetric.ts.desc())
+    stmt = stmt.order_by(RealtimeMetricWide.ts.desc())
     offset = (page - 1) * size
     stmt = stmt.offset(offset).limit(size)
 
@@ -154,8 +157,8 @@ async def realtime_history(
     metrics = result.scalars().all()
     pages = ceil(total / size) if size > 0 else 0
 
-    return PaginatedResponse[RealtimeMetricResponse](
-        items=[RealtimeMetricResponse.model_validate(m) for m in metrics],
+    return PaginatedResponse[RealtimeSnapshotResponse](
+        items=[RealtimeSnapshotResponse.model_validate(m) for m in metrics],
         total=total,
         page=page,
         size=size,
