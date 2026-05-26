@@ -12,7 +12,7 @@ import streamlit as st
 _BACKEND_URL = os.environ.get(
     "BACKEND_URL",
     "https://wiwynn-test-real-time-data-analysis-and-monitoring-backend.zeabur.app",
-)
+).rstrip("/")  # 防禦：移除末尾斜線避免拼接成 //api/v1 雙斜線
 # 本地開發者請設 BACKEND_URL=http://localhost:8000 override
 _API_PREFIX = "/api/v1"
 

@@ -17,11 +17,25 @@ import streamlit as st
 
 logger = logging.getLogger(__name__)
 
-_WS_URL = os.environ.get(
-    "WS_URL",
-    "wss://wiwynn-test-real-time-data-analysis-and-monitoring-backend.zeabur.app/ws/realtime",
-)
-# 本地開發者請設 WS_URL=ws://localhost:8000/ws/realtime override
+def _resolve_ws_url() -> str:
+    """
+    解析 WebSocket endpoint URL：
+    - 優先讀 BACKEND_WS_URL（對齊 .env.example、Zeabur env var）
+    - 否則讀 WS_URL（舊兼容）
+    - 都沒有則使用 production fallback
+    - BACKEND_WS_URL 若只給 base（不含 /ws/realtime 路徑），自動補上 /ws/realtime
+    """
+    raw = os.environ.get("BACKEND_WS_URL") or os.environ.get("WS_URL")
+    if not raw:
+        return "wss://wiwynn-test-real-time-data-analysis-and-monitoring-backend.zeabur.app/ws/realtime"
+    raw = raw.rstrip("/")
+    if raw.endswith("/ws/realtime"):
+        return raw
+    return f"{raw}/ws/realtime"
+
+
+_WS_URL = _resolve_ws_url()
+# 本地開發者請設 BACKEND_WS_URL=ws://localhost:8000 override（path 自動補）
 # 注意：BE 的 WS endpoint 是 /ws/realtime（不走 /api/v1 prefix）
 
 _BACKOFF_INITIAL = 1      # 秒
