@@ -77,7 +77,7 @@ st.markdown("---")
 
 # ── 篩選 Widget ───────────────────────────────────────────────────────────────
 with st.expander("查詢條件", expanded=True):
-    filter_col1, filter_col2, filter_col3 = st.columns(3)
+    filter_col1, filter_col2 = st.columns(2)
 
     with filter_col1:
         now_utc = datetime.now(tz=timezone.utc)
@@ -87,16 +87,6 @@ with st.expander("查詢條件", expanded=True):
         f_date_to = st.date_input("結束日期", value=default_to, key="analytics_date_to")
 
     with filter_col2:
-        # T7.3: 單一 f_sources multiselect 取代 v2 的 3 個 toggle
-        f_sources = st.multiselect(
-            "資料來源（留空 = 全部）",
-            options=["user", "simulator"],
-            default=[],
-            key="f_sources",
-            format_func=lambda x: {"user": "錄入資料", "simulator": "即時資料"}.get(x, x),
-        )
-
-    with filter_col3:
         _BUCKET_MAP = {"小時（hour）": "hour", "天（day）": "day"}
         f_bucket_label = st.selectbox("時間粒度", list(_BUCKET_MAP.keys()), index=1)
         f_bucket = _BUCKET_MAP[f_bucket_label]
@@ -125,7 +115,9 @@ def _fetch_summary(date_from: str, date_to: str, sources_key: str) -> dict:
     return {}
 
 
-sources_cache_key = ",".join(sorted(f_sources)) if f_sources else ""
+# Phase 11.4: source filter removed — scope A data_records only has source='user'.
+# Pass empty string to all fetch functions (no source filter applied).
+sources_cache_key = ""
 
 with st.spinner("載入統計摘要..."):
     try:
@@ -469,11 +461,9 @@ st.subheader("匯出資料")
 dl_col1, dl_col2 = st.columns([2, 2])
 
 with dl_col1:
-    _SOURCE_ZH = {"user": "錄入資料", "simulator": "即時資料"}
-    source_label_str = "、".join(_SOURCE_ZH.get(s, s) for s in f_sources) if f_sources else "全部"
     st.markdown(
         "點擊下方按鈕匯出目前篩選條件的資料為 **Excel (.xlsx)** 格式。  \n"
-        f"篩選：{f_date_from} ~ {f_date_to}，來源：{source_label_str}",
+        f"篩選：{f_date_from} ~ {f_date_to}，來源：全部",
     )
 
 with dl_col2:
@@ -485,8 +475,6 @@ with dl_col2:
                     "date_to": f_date_to.isoformat() + "T23:59:59Z",
                     "format": "xlsx",
                 }
-                if f_sources:
-                    export_params["sources"] = f_sources
 
                 resp_export = client.get("/analytics/export", params=export_params)
 

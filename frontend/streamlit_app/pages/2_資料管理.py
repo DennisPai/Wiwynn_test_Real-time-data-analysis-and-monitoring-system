@@ -68,17 +68,10 @@ st.markdown("---")
 
 # ── 篩選 Widget ───────────────────────────────────────────────────────────────
 with st.expander("篩選條件", expanded=True):
+    # Phase 11.4: source multiselect removed — scope A data_records only has source='user'.
     f_col1, f_col2, f_col3 = st.columns(3)
 
     with f_col1:
-        # T7.2: source multiselect 取代 v2 category text input
-        f_sources = st.multiselect(
-            "資料來源（留空 = 全部）",
-            options=["user", "simulator"],
-            default=[],
-            key="f_sources",
-            format_func=lambda x: {"user": "錄入資料", "simulator": "即時資料"}.get(x, x),
-        )
         f_date_from = st.date_input("起始日期", value=None, key="date_from")
         f_date_to = st.date_input("結束日期", value=None, key="date_to")
 
@@ -133,8 +126,6 @@ def _build_params() -> dict[str, Any]:
         "sort_by": f_sort_by,
         "sort_order": f_sort_order,
     }
-    if f_sources:
-        params["sources"] = f_sources
     if f_metric_key:
         params["metric"] = f_metric_key
         if f_min_value is not None:
@@ -509,14 +500,15 @@ st.markdown("---")
 if role in ("admin", "user"):
     st.subheader("批量匯入 CSV")
     st.caption(
-        "CSV 格式採 wide schema（11 欄）。請先下載範本參考格式，再上傳您的資料檔案。"
-        "單檔上限 10 MB。"
+        "CSV 採 wide schema 格式，共 **10 欄**"
+        "（最後一欄 owner_email 可選填，可省略寫成 9 欄）。"
+        "請先下載範本參考格式，再上傳您的資料檔案。單檔上限 10 MB。"
     )
 
-    # T7.2: sample download button 放在 file_uploader 上方
+    # sample download button 放在 file_uploader 上方（總是顯示）
     _SAMPLE_PATH = os.path.join(
-        os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
-        "docs",
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        "data",
         "sample_data.csv",
     )
     if os.path.exists(_SAMPLE_PATH):
@@ -529,11 +521,12 @@ if role in ("admin", "user"):
             mime="text/csv",
             key="download_sample_csv",
         )
-    else:
         st.caption(
-            "CSV 欄位：ts, temperature, humidity, pressure, voltage, cpu_usage, "
-            "anomaly_flags, source, note, owner_email（共 10 欄，owner_email 可省略）。"
+            "**欄位**：ts、temperature、humidity、pressure、voltage、cpu_usage、"
+            "anomaly_flags、source、note、owner_email（共 **10 欄**，owner_email 可選填）"
         )
+    else:
+        st.warning("（範本暫時無法載入，請聯絡管理員）")
 
     uploaded_file = st.file_uploader(
         "選擇 CSV 檔案",
